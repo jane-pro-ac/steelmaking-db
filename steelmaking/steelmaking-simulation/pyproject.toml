@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "steelmaking-simulation"
+version = "0.1.0"
+description = "A simulation program for steelmaking operations"
+authors = ["Developer"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+psycopg2-binary = "^2.9.9"
+python-dotenv = "^1.0.0"
+
+[tool.poetry.scripts]
+simulate = "steelmaking_simulation.main:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
