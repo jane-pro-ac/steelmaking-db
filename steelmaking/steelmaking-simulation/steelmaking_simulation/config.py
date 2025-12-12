@@ -31,15 +31,35 @@ class SimulationConfig:
     new_heat_probability: float = float(os.getenv("NEW_HEAT_PROBABILITY", "0.3"))
     
     # Operation duration range (minutes)
-    min_operation_duration: int = 10
-    max_operation_duration: int = 30
-    
+    min_operation_duration: int = 30
+    max_operation_duration: int = 50
+
+    # Transfer gap between BOF->LF->CCM for the same heat (minutes)
+    min_transfer_gap_minutes: int = int(os.getenv("MIN_TRANSFER_GAP_MINUTES", "20"))
+    max_transfer_gap_minutes: int = int(os.getenv("MAX_TRANSFER_GAP_MINUTES", "30"))
+
+    # Max allowed device idle/rest time (minutes)
+    max_rest_duration_minutes: int = int(os.getenv("MAX_REST_DURATION_MINUTES", "15"))
+    # Min required device rest time between consecutive operations (minutes)
+    min_rest_duration_minutes: int = int(os.getenv("MIN_REST_DURATION_MINUTES", "5"))
+
+    # Prefer aligned routing: BOF#i -> LF#i -> CCM#i
+    aligned_route_probability: float = float(os.getenv("ALIGNED_ROUTE_PROBABILITY", "0.9"))
+
+    # Warnings
+    max_warnings_per_operation: int = int(os.getenv("MAX_WARNINGS_PER_OPERATION", "5"))
+    warning_probability_per_tick: float = float(os.getenv("WARNING_PROBABILITY_PER_TICK", "0.05"))
+    seed_warning_probability_per_completed_operation: float = float(
+        os.getenv("SEED_WARNING_PROBABILITY_PER_COMPLETED_OPERATION", "0.25")
+    )
+
     # Gap between operations range (minutes)
     min_gap_duration: int = 1
     max_gap_duration: int = 10
 
     # Demo seeding
     seed_past_heats: int = int(os.getenv("DEMO_SEED_PAST_HEATS", "4"))
+    seed_active_heats: int = int(os.getenv("DEMO_SEED_ACTIVE_HEATS", "2"))
     seed_future_heats: int = int(os.getenv("DEMO_SEED_FUTURE_HEATS", "4"))
 
 

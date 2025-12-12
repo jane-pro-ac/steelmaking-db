@@ -213,6 +213,35 @@ class DatabaseManager:
                     return device
             return None
 
+    def get_device_operation_windows(
+        self,
+        device_no: str,
+        min_window_start: datetime,
+        exclude_operation_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return scheduled/active windows on a device ordered by start time."""
+        with self.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id,
+                       proc_status,
+                       plan_start_time,
+                       plan_end_time,
+                       real_start_time,
+                       real_end_time
+                FROM steelmaking.steelmaking_operation
+                WHERE device_no = %s
+                  AND (%s IS NULL OR id <> %s)
+                  AND (
+                        proc_status = 1
+                        OR COALESCE(real_end_time, plan_end_time) >= %s
+                  )
+                ORDER BY COALESCE(real_start_time, plan_start_time)
+                """,
+                (device_no, exclude_operation_id, exclude_operation_id, min_window_start),
+            )
+            return cur.fetchall()
+
     def clear_operations(self):
         """Remove all operations (demo reset)."""
         with self.cursor() as cur:
@@ -266,3 +295,31 @@ class DatabaseManager:
             )
             result = cur.fetchone()
             return result["id"]
+
+    def get_operation_warning_count(self, operation_id: int) -> int:
+        """Return number of warnings already emitted for an operation."""
+        with self.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM steelmaking.steelmaking_warning
+                WHERE operation_id = %s
+                """,
+                (operation_id,),
+            )
+            row = cur.fetchone()
+            return int(row["n"]) if row else 0
+
+    def get_operation_last_warning_end_time(self, operation_id: int):
+        """Return the latest warning_time_end for an operation, or None."""
+        with self.cursor() as cur:
+            cur.execute(
+                """
+                SELECT MAX(warning_time_end) AS last_end
+                FROM steelmaking.steelmaking_warning
+                WHERE operation_id = %s
+                """,
+                (operation_id,),
+            )
+            row = cur.fetchone()
+            return row["last_end"] if row else None
