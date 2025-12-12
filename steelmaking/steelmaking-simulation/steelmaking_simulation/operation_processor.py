@@ -71,9 +71,10 @@ class OperationProcessor:
             return
 
         planned_duration = next_op["plan_end_time"] - next_op["plan_start_time"]
-        transfer_offset = self.ctx.get_random_transfer_gap()
-        desired_start = completion_time + transfer_offset
-        latest_start = completion_time + timedelta(minutes=self.ctx.config.max_transfer_gap_minutes)
+        min_ready = completion_time + timedelta(minutes=self.ctx.config.min_transfer_gap_minutes)
+        preferred_latest = completion_time + timedelta(minutes=self.ctx.config.max_transfer_gap_minutes)
+        desired_start = min_ready
+        latest_start = preferred_latest
 
         bof_proc_cd = EQUIPMENT["BOF"]["proc_cd"]
         bof_device = None
@@ -101,6 +102,16 @@ class OperationProcessor:
                 process_name=proc_name,
                 desired_start=desired_start,
                 latest_start=latest_start,
+                duration=planned_duration,
+                devices=EQUIPMENT[proc_name]["devices"],
+                exclude_operation_id=next_op["id"],
+            )
+        if not slot:
+            # Soft rule: prefer 20-30 min transfer, but allow delay if scheduling is tight.
+            slot = self.ctx.scheduler.find_slot(
+                process_name=proc_name,
+                desired_start=desired_start,
+                latest_start=None,
                 duration=planned_duration,
                 devices=EQUIPMENT[proc_name]["devices"],
                 exclude_operation_id=next_op["id"],
@@ -210,17 +221,34 @@ class OperationProcessor:
             proc_name = PROCESS_FLOW[current_proc_idx]
             min_ready_time = prev_op["real_end_time"] + timedelta(minutes=self.ctx.config.min_transfer_gap_minutes)
             max_ready_time = prev_op["real_end_time"] + timedelta(minutes=self.ctx.config.max_transfer_gap_minutes)
-            scheduled_start = max(op["plan_start_time"], min_ready_time)
+
+            # Soft rule: prefer transfer within [20,30] minutes; allow delayed starts if missed.
+            if now > max_ready_time:
+                scheduled_start = max(op["plan_start_time"], now)
+                latest_start = None
+            else:
+                scheduled_start = max(op["plan_start_time"], min_ready_time)
+                latest_start = max_ready_time
             duration = op["plan_end_time"] - op["plan_start_time"]
 
             slot = self.ctx.scheduler.find_slot(
                 process_name=proc_name,
                 desired_start=scheduled_start,
-                latest_start=max_ready_time,
+                latest_start=latest_start,
                 duration=duration,
                 devices=EQUIPMENT[proc_name]["devices"],
                 exclude_operation_id=op["id"],
             )
+            if not slot:
+                # Soft fallback: allow delayed starts outside the preferred 20-30 window.
+                slot = self.ctx.scheduler.find_slot(
+                    process_name=proc_name,
+                    desired_start=max(now, scheduled_start),
+                    latest_start=None,
+                    duration=duration,
+                    devices=EQUIPMENT[proc_name]["devices"],
+                    exclude_operation_id=op["id"],
+                )
             if not slot:
                 self.ctx.logger.debug("No available slot for pending operation %s, will retry", op["id"])
                 continue

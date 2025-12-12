@@ -484,3 +484,49 @@ def test_pending_bof_starts_when_plan_time_passed(fixed_now):
     # Plan is updated to reflect the delayed start.
     assert op["plan_start_time"] == fixed_now
     assert op["plan_end_time"] > op["plan_start_time"]
+
+
+def test_pending_lf_can_start_after_missing_transfer_window(fixed_now):
+    db = FakeDatabaseManager()
+    sim = SteelmakingSimulator(DatabaseConfig(), SimulationConfig(), db_manager=db)
+
+    prev_end = fixed_now - timedelta(minutes=40)
+    prev_id = db.insert_operation(
+        heat_no=240100124,
+        pro_line_cd="G1",
+        proc_cd=EQUIPMENT["BOF"]["proc_cd"],
+        device_no=EQUIPMENT["BOF"]["devices"][0],
+        crew_cd="A",
+        stl_grd_id=1,
+        stl_grd_cd="G-TEST",
+        proc_status=ProcessStatus.COMPLETED,
+        plan_start_time=prev_end - timedelta(minutes=35),
+        plan_end_time=prev_end,
+        real_start_time=prev_end - timedelta(minutes=35),
+        real_end_time=prev_end,
+    )
+
+    # Planned inside 20-30 window, but now is already past max_ready (prev_end + 30).
+    lf_plan_start = prev_end + timedelta(minutes=29)
+    lf_plan_end = lf_plan_start + timedelta(minutes=35)
+    lf_id = db.insert_operation(
+        heat_no=240100124,
+        pro_line_cd="G1",
+        proc_cd=EQUIPMENT["LF"]["proc_cd"],
+        device_no=EQUIPMENT["LF"]["devices"][0],
+        crew_cd="A",
+        stl_grd_id=1,
+        stl_grd_cd="G-TEST",
+        proc_status=ProcessStatus.PENDING,
+        plan_start_time=lf_plan_start,
+        plan_end_time=lf_plan_end,
+        real_start_time=None,
+        real_end_time=None,
+    )
+
+    sim.process_pending_operations()
+
+    lf = next(o for o in db.operations if o["id"] == lf_id)
+    assert lf["proc_status"] == ProcessStatus.ACTIVE
+    assert lf["real_start_time"] == fixed_now
+    assert lf["real_end_time"] is None
