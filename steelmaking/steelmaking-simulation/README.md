@@ -5,10 +5,17 @@ A Python program that simulates steelmaking operations by generating realistic d
 ## Features
 
 - Simulates the BOF -> LF -> CCM steelmaking process flow
+- Generates crew assignments (A/B/C/D) for each heat
 - Generates realistic timestamps with proper sequencing
+- Emits realistic warning events during seeding and for active operations
 - Manages multiple equipment units (3 BOF, 3 LF, 3 CCM)
 - Runs continuously to simulate real-time data generation
 - Follows all business rules for operation status and timing
+
+## Schema expectations
+
+- Writes to `steelmaking.steelmaking_operation` using `crew_cd`, `stl_grd_id`, and `stl_grd_cd` columns.
+- Resets both `steelmaking_operation` and `steelmaking_warning` tables when seeding demo data; warnings now use `warning_time_start`/`warning_time_end`.
 
 ## Prerequisites
 

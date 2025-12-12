@@ -6,7 +6,8 @@ Here is the example steelmaking operation data:
   "pro_line_cd": "G1", // 产线代码 永远都是G1-代表着炼钢产线
   "proc_cd": "G12", // 工序代码 G12-BOF工序 G13-LF工序 G15-RH工序 G16-CCM工序
   "device_no": "G120", // 设备座次号 G120-代表着1#转炉 G130-代表着1#LF G150-代表着1#RH G160-代表着1#CCM G121-代表着2#转炉 以此类推
-  "steel_grade_id": 1, // 钢种ID 对应steel_grade表的id
+  "crew_cd": "A", // 班组代码 A/B/C/D
+  "stl_grd_id": 1, // 钢种ID 对应steel_grade表的id
   "stl_grd_cd": "C001", // 钢种代码 对应steel_grade表的stl_grd_cd
   "proc_status": 0, // 工序状态 0-completed 1-active 2-pending
   "plan_start_time": "2025-12-07 14:40:00+08", // 计划开始时间

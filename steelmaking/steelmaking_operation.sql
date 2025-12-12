@@ -7,8 +7,10 @@ CREATE TABLE steelmaking.steelmaking_operation (
     pro_line_cd      TEXT NOT NULL,              -- 产线代码
     proc_cd          TEXT NOT NULL,              -- 工序代码
     device_no        TEXT NOT NULL,              -- 设备座次号
-
-    steel_grade_id   BIGINT REFERENCES base.steel_grade(id),
+    crew_cd          TEXT NOT NULL,              -- 班组代码 A, B, C, D
+    CONSTRAINT chk_crew_cd CHECK (crew_cd IN ('A', 'B', 'C', 'D')),
+    
+    stl_grd_id   BIGINT REFERENCES base.steel_grade(id),
     stl_grd_cd       TEXT,                       -- 冗余钢种代码，可选
 
     proc_status      SMALLINT NOT NULL,          -- 0: completed, 1: active, 2: pending

@@ -7,7 +7,7 @@ from typing import List, Dict, Optional, Any
 
 from .config import (
     SimulationConfig, DatabaseConfig,
-    EQUIPMENT, PROCESS_FLOW, PRO_LINE_CD, ProcessStatus
+    EQUIPMENT, PROCESS_FLOW, PRO_LINE_CD, ProcessStatus, CREW_CODES
 )
 from .database import DatabaseManager
 
@@ -15,6 +15,33 @@ logger = logging.getLogger(__name__)
 
 # Timezone for China Standard Time (UTC+8)
 CST = timezone(timedelta(hours=8))
+
+# Warning message templates keyed by process name
+WARNING_TEMPLATES = {
+    "BOF": [
+        {"msg": "检测到氧枪压力波动", "code": "BOF-01", "level": 2},
+        {"msg": "转炉煤气温度快速上升", "code": "BOF-02", "level": 2},
+        {"msg": "冷却水流量低于下限", "code": "BOF-03", "level": 1},
+        {"msg": "铁水硅超标，需调整造渣剂加入量", "code": "BOF-04", "level": 3},
+    ],
+    "LF": [
+        {"msg": "氩搅拌压力不稳定", "code": "LF-01", "level": 2},
+        {"msg": "钢包温度下降超过目标", "code": "LF-02", "level": 3},
+        {"msg": "合金加入机堵料", "code": "LF-03", "level": 2},
+        {"msg": "电极消耗高于预期", "code": "LF-04", "level": 4},
+    ],
+    "CCM": [
+        {"msg": "结晶器液位振荡超出范围", "code": "CCM-01", "level": 2},
+        {"msg": "二冷水压力偏低", "code": "CCM-02", "level": 1},
+        {"msg": "中间包温度偏移", "code": "CCM-03", "level": 3},
+        {"msg": "拉速波动", "code": "CCM-04", "level": 3},
+    ],
+    "COMMON": [
+        {"msg": "传感器信号噪声过高", "code": "W-100", "level": 4},
+        {"msg": "请人工检查工艺参数", "code": "W-101", "level": 4},
+        {"msg": "数据采集延迟", "code": "W-102", "level": 4},
+    ],
+}
 
 
 class SteelmakingSimulator:
@@ -24,6 +51,9 @@ class SteelmakingSimulator:
         self.db = DatabaseManager(db_config)
         self.config = sim_config
         self.steel_grades: List[Dict[str, Any]] = []
+        # Basic probabilities to avoid flooding warnings
+        self.seed_warning_probability = 0.5
+        self.active_warning_probability = 0.1
 
     def initialize(self):
         """Initialize the simulator by loading necessary data."""
@@ -64,6 +94,10 @@ class SteelmakingSimulator:
         )
         return timedelta(minutes=minutes)
 
+    def get_random_crew(self) -> str:
+        """Pick a random crew code for a heat."""
+        return random.choice(CREW_CODES)
+
     def get_random_gap(self) -> timedelta:
         """Get a random gap between operations."""
         minutes = random.randint(
@@ -71,6 +105,91 @@ class SteelmakingSimulator:
             self.config.max_gap_duration
         )
         return timedelta(minutes=minutes)
+
+    def _random_warning_level(self) -> int:
+        """Pick a warning level (1-4) with mild bias toward lower severity."""
+        return random.choices([1, 2, 3, 4], weights=[0.1, 0.2, 0.35, 0.35], k=1)[0]
+
+    def _get_warning_templates(self, proc_cd: str) -> List[Dict[str, Any]]:
+        """Get warning templates for a process code, plus common fallbacks."""
+        proc_name = self._get_process_name(proc_cd)
+        templates = WARNING_TEMPLATES.get(proc_name, [])
+        return templates + WARNING_TEMPLATES["COMMON"]
+
+    def _build_warning_payload(self, proc_cd: str) -> Dict[str, Any]:
+        """Pick a warning template and derive code/level/message."""
+        templates = self._get_warning_templates(proc_cd)
+        template = random.choice(templates) if templates else {"msg": "Process warning", "level": 4}
+        warning_level = template.get("level") or self._random_warning_level()
+        warning_code = template.get("code")
+        # Drop the code occasionally to exercise optionality
+        if warning_code and random.random() < 0.3:
+            warning_code = None
+        return {
+            "warning_code": warning_code,
+            "warning_msg": template["msg"],
+            "warning_level": warning_level,
+        }
+
+    def _random_warning_window(self, start: datetime, end: datetime) -> Optional[Dict[str, datetime]]:
+        """Generate a random warning time window within [start, end]."""
+        if start is None or end is None or end <= start:
+            return None
+
+        start_ts = start.timestamp()
+        end_ts = end.timestamp()
+        warn_start_ts = random.uniform(start_ts, end_ts)
+        warn_end_ts = random.uniform(warn_start_ts, end_ts)
+
+        warn_start = datetime.fromtimestamp(warn_start_ts, tz=start.tzinfo)
+        warn_end = datetime.fromtimestamp(warn_end_ts, tz=start.tzinfo)
+
+        if warn_end <= warn_start:
+            warn_end = warn_start + timedelta(seconds=30)
+            if warn_end > end:
+                warn_end = end
+                if warn_end <= warn_start:
+                    return None
+
+        return {
+            "warning_time_start": warn_start,
+            "warning_time_end": warn_end,
+        }
+
+    def _create_warnings_for_operation(
+        self,
+        operation: Dict[str, Any],
+        window_start: datetime,
+        window_end: datetime,
+        probability: float
+    ):
+        """Maybe create 1-5 warnings for an operation within the given window."""
+        if window_start is None or window_end is None or window_end <= window_start or probability <= 0:
+            return
+
+        if random.random() >= probability:
+            return
+
+        warning_count = random.randint(1, 5)
+        for _ in range(warning_count):
+            window = self._random_warning_window(window_start, window_end)
+            if not window:
+                continue
+            payload = self._build_warning_payload(operation["proc_cd"])
+            self.db.insert_warning(
+                operation_id=operation["id"],
+                heat_no=operation["heat_no"],
+                pro_line_cd=operation["pro_line_cd"],
+                proc_cd=operation["proc_cd"],
+                device_no=operation["device_no"],
+                crew_cd=operation["crew_cd"],
+                warning_code=payload["warning_code"],
+                warning_msg=payload["warning_msg"],
+                warning_level=payload["warning_level"],
+                warning_time_start=window["warning_time_start"],
+                warning_time_end=window["warning_time_end"],
+                extra=None,
+            )
 
     def _reset_demo_data(self):
         """Reset table and seed past completed flows and future plans for demo."""
@@ -86,9 +205,11 @@ class SteelmakingSimulator:
         for _ in range(self.config.seed_past_heats):
             heat_no = self.generate_heat_no()
             steel_grade = self.get_random_steel_grade()
+            crew_cd = self.get_random_crew()
             start_time = self._seed_single_flow(
                 heat_no=heat_no,
                 steel_grade=steel_grade,
+                crew_cd=crew_cd,
                 start_time=start_time,
                 mark_completed=True
             )
@@ -104,9 +225,11 @@ class SteelmakingSimulator:
                 break
             heat_no = self.generate_heat_no()
             steel_grade = self.get_random_steel_grade()
+            crew_cd = self.get_random_crew()
             start_time = self._seed_single_flow(
                 heat_no=heat_no,
                 steel_grade=steel_grade,
+                crew_cd=crew_cd,
                 start_time=start_time,
                 mark_completed=False
             )
@@ -116,6 +239,7 @@ class SteelmakingSimulator:
         self,
         heat_no: int,
         steel_grade: Dict[str, Any],
+        crew_cd: str,
         start_time: datetime,
         mark_completed: bool,
     ) -> datetime:
@@ -150,12 +274,13 @@ class SteelmakingSimulator:
                 real_end = None
                 proc_status = ProcessStatus.PENDING
 
-            self.db.insert_operation(
+            operation_id = self.db.insert_operation(
                 heat_no=heat_no,
                 pro_line_cd=PRO_LINE_CD,
                 proc_cd=proc_cd,
                 device_no=device_no,
-                steel_grade_id=steel_grade['id'],
+                crew_cd=crew_cd,
+                stl_grd_id=steel_grade['id'],
                 stl_grd_cd=steel_grade['code'],
                 proc_status=proc_status,
                 plan_start_time=plan_start,
@@ -163,6 +288,22 @@ class SteelmakingSimulator:
                 real_start_time=real_start,
                 real_end_time=real_end
             )
+
+            if mark_completed:
+                operation = {
+                    "id": operation_id,
+                    "heat_no": heat_no,
+                    "pro_line_cd": PRO_LINE_CD,
+                    "proc_cd": proc_cd,
+                    "device_no": device_no,
+                    "crew_cd": crew_cd,
+                }
+                self._create_warnings_for_operation(
+                    operation,
+                    window_start=real_start,
+                    window_end=real_end,
+                    probability=self.seed_warning_probability,
+                )
 
             last_end = real_end if mark_completed else plan_end
             current_plan_start = plan_end + self.get_random_gap()
@@ -183,6 +324,7 @@ class SteelmakingSimulator:
         
         heat_no = self.generate_heat_no()
         steel_grade = self.get_random_steel_grade()
+        crew_cd = self.get_random_crew()
         now = datetime.now(CST)
         
         logger.info(f"Creating new heat {heat_no} with steel grade {steel_grade['code']}")
@@ -224,7 +366,8 @@ class SteelmakingSimulator:
                 pro_line_cd=PRO_LINE_CD,
                 proc_cd=proc_cd,
                 device_no=device_no,
-                steel_grade_id=steel_grade['id'],
+                crew_cd=crew_cd,
+                stl_grd_id=steel_grade['id'],
                 stl_grd_cd=steel_grade['code'],
                 proc_status=proc_status,
                 plan_start_time=plan_start,
@@ -247,6 +390,15 @@ class SteelmakingSimulator:
         now = datetime.now(CST)
         
         for op in active_ops:
+            # Occasionally generate warnings during active operations
+            if op['real_start_time']:
+                self._create_warnings_for_operation(
+                    op,
+                    window_start=op['real_start_time'],
+                    window_end=now,
+                    probability=self.active_warning_probability
+                )
+
             # Check if operation has been running long enough
             if op['real_start_time']:
                 elapsed = now - op['real_start_time']

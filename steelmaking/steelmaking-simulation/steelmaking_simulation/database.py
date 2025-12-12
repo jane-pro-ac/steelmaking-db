@@ -52,8 +52,8 @@ class DatabaseManager:
         """Get all active operations (status = 1)."""
         with self.cursor() as cur:
             cur.execute("""
-                SELECT id, heat_no, pro_line_cd, proc_cd, device_no,
-                       steel_grade_id, stl_grd_cd, proc_status,
+                SELECT id, heat_no, pro_line_cd, proc_cd, device_no, crew_cd,
+                       stl_grd_id, stl_grd_cd, proc_status,
                        plan_start_time, plan_end_time,
                        real_start_time, real_end_time
                 FROM steelmaking.steelmaking_operation
@@ -66,8 +66,8 @@ class DatabaseManager:
         """Get all pending operations (status = 2)."""
         with self.cursor() as cur:
             cur.execute("""
-                SELECT id, heat_no, pro_line_cd, proc_cd, device_no,
-                       steel_grade_id, stl_grd_cd, proc_status,
+                SELECT id, heat_no, pro_line_cd, proc_cd, device_no, crew_cd,
+                       stl_grd_id, stl_grd_cd, proc_status,
                        plan_start_time, plan_end_time,
                        real_start_time, real_end_time
                 FROM steelmaking.steelmaking_operation
@@ -80,8 +80,8 @@ class DatabaseManager:
         """Get all operations for a specific heat."""
         with self.cursor() as cur:
             cur.execute("""
-                SELECT id, heat_no, pro_line_cd, proc_cd, device_no,
-                       steel_grade_id, stl_grd_cd, proc_status,
+                SELECT id, heat_no, pro_line_cd, proc_cd, device_no, crew_cd,
+                       stl_grd_id, stl_grd_cd, proc_status,
                        plan_start_time, plan_end_time,
                        real_start_time, real_end_time
                 FROM steelmaking.steelmaking_operation
@@ -94,8 +94,8 @@ class DatabaseManager:
         """Get the current active or pending operation for a device."""
         with self.cursor() as cur:
             cur.execute("""
-                SELECT id, heat_no, pro_line_cd, proc_cd, device_no,
-                       steel_grade_id, stl_grd_cd, proc_status,
+                SELECT id, heat_no, pro_line_cd, proc_cd, device_no, crew_cd,
+                       stl_grd_id, stl_grd_cd, proc_status,
                        plan_start_time, plan_end_time,
                        real_start_time, real_end_time
                 FROM steelmaking.steelmaking_operation
@@ -140,7 +140,8 @@ class DatabaseManager:
         pro_line_cd: str,
         proc_cd: str,
         device_no: str,
-        steel_grade_id: int,
+        crew_cd: str,
+        stl_grd_id: int,
         stl_grd_cd: str,
         proc_status: int,
         plan_start_time: datetime,
@@ -152,11 +153,11 @@ class DatabaseManager:
         with self.cursor() as cur:
             cur.execute("""
                 INSERT INTO steelmaking.steelmaking_operation
-                (heat_no, pro_line_cd, proc_cd, device_no, steel_grade_id, stl_grd_cd,
+                (heat_no, pro_line_cd, proc_cd, device_no, crew_cd, stl_grd_id, stl_grd_cd,
                  proc_status, plan_start_time, plan_end_time, real_start_time, real_end_time)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
-            """, (heat_no, pro_line_cd, proc_cd, device_no, steel_grade_id, stl_grd_cd,
+            """, (heat_no, pro_line_cd, proc_cd, device_no, crew_cd, stl_grd_id, stl_grd_cd,
                   proc_status, plan_start_time, plan_end_time, real_start_time, real_end_time))
             result = cur.fetchone()
             return result['id']
@@ -220,3 +221,48 @@ class DatabaseManager:
                          steelmaking.steelmaking_operation
                 RESTART IDENTITY CASCADE
             """)
+
+    def insert_warning(
+        self,
+        *,
+        operation_id: int,
+        heat_no: int,
+        pro_line_cd: str,
+        proc_cd: str,
+        device_no: str,
+        crew_cd: str,
+        warning_level: int,
+        warning_msg: str,
+        warning_time_start: datetime,
+        warning_time_end: datetime,
+        warning_code: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Insert a warning linked to an operation."""
+        with self.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO steelmaking.steelmaking_warning (
+                    operation_id, heat_no, pro_line_cd, proc_cd, device_no, crew_cd,
+                    warning_code, warning_msg, warning_level, warning_time_start, warning_time_end, extra
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    operation_id,
+                    heat_no,
+                    pro_line_cd,
+                    proc_cd,
+                    device_no,
+                    crew_cd,
+                    warning_code,
+                    warning_msg,
+                    warning_level,
+                    warning_time_start,
+                    warning_time_end,
+                    extra,
+                ),
+            )
+            result = cur.fetchone()
+            return result["id"]
