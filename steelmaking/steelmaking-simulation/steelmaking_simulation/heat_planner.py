@@ -119,7 +119,7 @@ class HeatPlanner:
             prev_end = slot.plan_end
 
         heat_no = self.ctx.generate_heat_no()
-        self.ctx.logger.info("Creating new heat %s with steel grade %s", heat_no, steel_grade["code"])
+        self.ctx.logger.info("Creating new heat %s with steel grade %s", heat_no, steel_grade["stl_grd_cd"])
 
         for entry in planned:
             self.ctx.db.insert_operation(
@@ -129,7 +129,7 @@ class HeatPlanner:
                 device_no=entry["device_no"],
                 crew_cd=crew_cd,
                 stl_grd_id=steel_grade["id"],
-                stl_grd_cd=steel_grade["code"],
+                stl_grd_cd=steel_grade["stl_grd_cd"],
                 proc_status=entry["status"],
                 plan_start_time=entry["plan_start"],
                 plan_end_time=entry["plan_end"],

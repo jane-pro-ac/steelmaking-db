@@ -255,7 +255,7 @@ class SteelmakingSimulator:
                 device_no=op["device_no"],
                 crew_cd=crew_cd,
                 stl_grd_id=steel_grade["id"],
-                stl_grd_cd=steel_grade["code"],
+                stl_grd_cd=steel_grade["stl_grd_cd"],
                 proc_status=op["status"],
                 plan_start_time=op["plan_start"],
                 plan_end_time=op["plan_end"],

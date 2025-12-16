@@ -23,7 +23,7 @@ CREATE TABLE steelmaking.steelmaking_operation (
 
     extra            JSONB,
 
-    CONSTRAINT uq_heat_proc_device UNIQUE (heat_no, proc_cd, device_no)
+    CONSTRAINT uq_heat_device UNIQUE (heat_no, device_no)
 );
 
 -- 1. BOF + 实绩时间（过去）
@@ -38,6 +38,6 @@ CREATE INDEX idx_op_bof_plan_time
       AND real_start_time IS NULL
       AND plan_start_time IS NOT NULL;
 
--- 3. 炉次全流程
-CREATE INDEX idx_op_heat_proc_time
-    ON steelmaking.steelmaking_operation (heat_no, proc_cd, real_start_time);
+-- 3. 加速产线监控查询
+CREATE INDEX idx_op_heat_no
+    ON steelmaking.steelmaking_operation (heat_no);

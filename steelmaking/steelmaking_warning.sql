@@ -20,5 +20,5 @@ CREATE TABLE steelmaking.steelmaking_warning (
     extra         JSONB
 );
 
-CREATE INDEX idx_warn_heat_device_time
-    ON steelmaking.steelmaking_warning (heat_no, device_no, warning_time_start DESC);
+CREATE INDEX idx_warn_heat_device
+    ON steelmaking.steelmaking_warning (heat_no, device_no);

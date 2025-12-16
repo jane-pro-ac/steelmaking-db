@@ -125,7 +125,7 @@ class OperationSeeder:
                             device_no=device_no,
                             crew_cd=crew_cd,
                             stl_grd_id=steel_grade["id"],
-                            stl_grd_cd=steel_grade["code"],
+                            stl_grd_cd=steel_grade["stl_grd_cd"],
                             proc_status=proc_status,
                             plan_start_time=plan_start,
                             plan_end_time=plan_end,

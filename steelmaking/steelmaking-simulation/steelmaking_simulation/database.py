@@ -45,7 +45,7 @@ class DatabaseManager:
     def get_steel_grades(self) -> List[Dict[str, Any]]:
         """Fetch all steel grades from the database."""
         with self.cursor() as cur:
-            cur.execute("SELECT id, code, name FROM base.steel_grade")
+            cur.execute("SELECT id, stl_grd_cd, stl_grd_nm FROM base.steel_grade")
             return cur.fetchall()
 
     def get_active_operations(self) -> List[Dict[str, Any]]:

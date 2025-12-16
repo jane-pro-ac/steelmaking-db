@@ -31,8 +31,8 @@ class SimulationConfig:
     new_heat_probability: float = float(os.getenv("NEW_HEAT_PROBABILITY", "0.3"))
     
     # Operation duration range (minutes)
-    min_operation_duration: int = 30
-    max_operation_duration: int = 50
+    min_operation_duration: int = int(os.getenv("MIN_OPERATION_DURATION_MINUTES", "30"))
+    max_operation_duration: int = int(os.getenv("MAX_OPERATION_DURATION_MINUTES", "50"))
 
     # Transfer gap between BOF->LF->CCM for the same heat (minutes)
     min_transfer_gap_minutes: int = int(os.getenv("MIN_TRANSFER_GAP_MINUTES", "20"))

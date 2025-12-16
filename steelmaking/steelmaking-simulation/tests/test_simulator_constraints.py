@@ -26,7 +26,7 @@ class FakeDatabaseManager:
         self.warnings = []
 
     def get_steel_grades(self):
-        return [{"id": 1, "code": "G-TEST", "name": "Test Grade"}]
+        return [{"id": 1, "stl_grd_cd": "G-TEST", "stl_grd_nm": "Test Grade"}]
 
     def get_latest_heat_no_for_month(self, year: int, month: int):
         lower_bound = int(f"{year:02d}{month:02d}00000")
@@ -481,9 +481,74 @@ def test_pending_bof_starts_when_plan_time_passed(fixed_now):
     assert op["proc_status"] == ProcessStatus.ACTIVE
     assert op["real_start_time"] == fixed_now
     assert op["real_end_time"] is None
-    # Plan is updated to reflect the delayed start.
-    assert op["plan_start_time"] == fixed_now
-    assert op["plan_end_time"] > op["plan_start_time"]
+    # Plan remains immutable after creation.
+    assert op["plan_start_time"] == plan_start
+    assert op["plan_end_time"] == plan_end
+
+
+def test_pending_bof_can_start_after_excess_idle_time(fixed_now):
+    db = FakeDatabaseManager()
+    sim = SteelmakingSimulator(DatabaseConfig(), SimulationConfig(), db_manager=db)
+
+    # Device was idle longer than max_rest_duration_minutes; runtime must not deadlock.
+    prev_end = fixed_now - timedelta(hours=2)
+    db.insert_operation(
+        heat_no=240100200,
+        pro_line_cd="G1",
+        proc_cd=EQUIPMENT["BOF"]["proc_cd"],
+        device_no=EQUIPMENT["BOF"]["devices"][0],
+        crew_cd="A",
+        stl_grd_id=1,
+        stl_grd_cd="G-TEST",
+        proc_status=ProcessStatus.COMPLETED,
+        plan_start_time=prev_end - timedelta(minutes=35),
+        plan_end_time=prev_end,
+        real_start_time=prev_end - timedelta(minutes=35),
+        real_end_time=prev_end,
+    )
+
+    plan_start = prev_end + timedelta(minutes=10)
+    plan_end = plan_start + timedelta(minutes=30)
+    op_id = db.insert_operation(
+        heat_no=240100201,
+        pro_line_cd="G1",
+        proc_cd=EQUIPMENT["BOF"]["proc_cd"],
+        device_no=EQUIPMENT["BOF"]["devices"][0],
+        crew_cd="A",
+        stl_grd_id=1,
+        stl_grd_cd="G-TEST",
+        proc_status=ProcessStatus.PENDING,
+        plan_start_time=plan_start,
+        plan_end_time=plan_end,
+        real_start_time=None,
+        real_end_time=None,
+    )
+
+    sim.process_pending_operations()
+
+    op = next(o for o in db.operations if o["id"] == op_id)
+    assert op["proc_status"] == ProcessStatus.ACTIVE
+    assert op["real_start_time"] == fixed_now
+    assert op["real_end_time"] is None
+    assert op["plan_start_time"] == plan_start
+    assert op["plan_end_time"] == plan_end
+
+
+def test_runtime_does_not_mutate_planned_timestamps(simulator, fixed_now, monkeypatch):
+    simulator.initialize()
+    simulator.config.new_heat_probability = 0.0
+
+    original = {op["id"]: (op["plan_start_time"], op["plan_end_time"]) for op in simulator.db.operations}
+
+    # Advance time in steps and tick; plan times should stay stable.
+    from steelmaking_simulation.time_utils import CST
+    times = [fixed_now + timedelta(minutes=15 * i) for i in range(1, 9)]
+    for t in times:
+        set_fixed_now(monkeypatch, datetime(t.year, t.month, t.day, t.hour, t.minute, tzinfo=CST))
+        simulator.tick()
+
+    after = {op["id"]: (op["plan_start_time"], op["plan_end_time"]) for op in simulator.db.operations if op["id"] in original}
+    assert after == original
 
 
 def test_pending_lf_can_start_after_missing_transfer_window(fixed_now):

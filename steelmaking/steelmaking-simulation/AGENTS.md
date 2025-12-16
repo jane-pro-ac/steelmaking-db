@@ -8,9 +8,9 @@
   - `steelmaking_simulation/simulator.py`: Orchestration layer wiring seeding, warnings, runtime processing, and heat creation.
   - `steelmaking_simulation/seeding.py`: Initialization seeding of operations + historical warnings (enforces all timing constraints).
   - `steelmaking_simulation/warning_engine.py`: Warning generation (historical seeding + real-time tick emissions + throttling).
-  - `steelmaking_simulation/operation_processor.py`: Runtime progression (complete active ops, start pending ops when ready, re-plan within constraints).
+  - `steelmaking_simulation/operation_processor.py`: Runtime progression (complete active ops, start pending ops when ready, **does not mutate** `plan_start_time/plan_end_time`).
   - `steelmaking_simulation/heat_planner.py`: New heat creation (BOF starts now; LF/CCM planned within transfer window; aligned routing bias).
-  - `steelmaking_simulation/scheduler.py`: Slot finder enforcing non-overlap and device rest bounds.
+  - `steelmaking_simulation/scheduler.py`: Slot finder enforcing non-overlap and rest bounds (upper rest bound is planning-only; runtime enforces minimum rest only).
   - `steelmaking_simulation/time_utils.py`: Shared time constants (e.g., CST).
   - `steelmaking_simulation/main.py`: CLI entrypoint; wires config/logging and starts the simulator.
   - Root docs: `README.md` (how to run) and `example_steelmaking_operation.md` (schema example).
@@ -21,6 +21,7 @@
   - Configure environment (copy `.env.example` → `.env` if present): `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, plus optional `SIMULATION_INTERVAL`, `NEW_HEAT_PROBABILITY`, `DEMO_SEED_PAST_HEATS`, `DEMO_SEED_FUTURE_HEATS`.
   - Start simulator: `poetry run simulate` (or `poetry shell` then `python -m steelmaking_simulation.main`).
   - Advanced knobs:
+    - Operation duration: `MIN_OPERATION_DURATION_MINUTES` / `MAX_OPERATION_DURATION_MINUTES` (defaults 30/50)
     - Device rest (hard constraint): `MIN_REST_DURATION_MINUTES` (default 10), `MAX_REST_DURATION_MINUTES` (default 20)
     - Heat transfer gaps (BOF→LF→CCM): `MIN_TRANSFER_GAP_MINUTES` (default 20), `MAX_TRANSFER_GAP_MINUTES` (default 30)
     - Routing preference: `ALIGNED_ROUTE_PROBABILITY` (default 0.9) biases BOF#i → LF#i → CCM#i (rare cross-routing still allowed)
@@ -41,10 +42,13 @@
     This ensures initialization always contains in-progress operations while keeping completed rows strictly in the past.
   - Tick loop: Processes active ops (may complete them), starts pending ops once predecessors and device availability allow, and may create a new heat per tick with probability `NEW_HEAT_PROBABILITY`. Active ops may emit real-time-ish 中文 warnings anchored to the current tick time.
     - Note: BOF (first stage) pending operations start when `now >= plan_start_time` and a BOF device is available (no predecessor gate).
+    - Runtime does **not** reschedule or rewrite planned timestamps. If upstream delays happen, real execution drifts while plans remain stable.
   - Timing & constraints (applied uniformly to seeding and runtime):
-    - Each operation duration is randomized between **30–50 minutes**.
+    - Each operation duration is randomized between `MIN_OPERATION_DURATION_MINUTES`–`MAX_OPERATION_DURATION_MINUTES` (defaults **30–50 minutes**).
     - Devices are never double-booked (a device cannot run two processes at the same time).
-    - For each device, the rest gap between consecutive operations is always within **10–20 minutes** (`MIN_REST_DURATION_MINUTES`/`MAX_REST_DURATION_MINUTES`).
+    - For each device, the rest gap between consecutive operations is at least **10 minutes** (`MIN_REST_DURATION_MINUTES`).
+      - Initialization/new-heat planning keeps the rest gap within **10–20 minutes** (`MAX_REST_DURATION_MINUTES`) to generate a continuous plan.
+      - Runtime is **soft** on the upper bound: long idles must not block starting ready operations.
     - For each heat, transfer gaps **BOF→LF** and **LF→CCM** target **20–30 minutes** (`MIN_TRANSFER_GAP_MINUTES`/`MAX_TRANSFER_GAP_MINUTES`).
       - Initialization and new-heat planning try to keep transfers in-window.
       - Runtime is **soft**: if scheduling conflicts cause a miss, the next stage may start later than 30 minutes (never earlier than 20), while still honoring device rest and non-overlap constraints.
