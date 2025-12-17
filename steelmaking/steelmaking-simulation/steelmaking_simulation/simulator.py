@@ -2,6 +2,7 @@
 
 This module is the orchestration layer. Most business logic lives in:
 - warning_engine.py (warnings)
+- event_engine.py (events)
 - seeding.py (initialization seeding)
 - heat_planner.py (new heat creation)
 - operation_processor.py (runtime progression)
@@ -24,6 +25,7 @@ from .config import (
     SimulationConfig,
 )
 from .database import DatabaseManager
+from .event_engine import EventEngine
 from .heat_planner import HeatPlanContext, HeatPlanner
 from .operation_processor import OperationProcessor, OperationProcessorContext
 from .scheduler import DeviceScheduler
@@ -44,11 +46,13 @@ class SteelmakingSimulator:
         self.steel_grades: List[Dict[str, Any]] = []
 
         self.warnings = WarningEngine(db=self.db, config=self.config, get_process_name=self._get_process_name, logger=logger)
+        self.events = EventEngine(db=self.db, config=self.config, get_process_name=self._get_process_name, logger=logger)
         self.seeder = OperationSeeder(
             SeedContext(
                 db=self.db,
                 config=self.config,
                 warnings=self.warnings,
+                events=self.events,
                 generate_heat_no=self.generate_heat_no,
                 get_random_steel_grade=self.get_random_steel_grade,
                 get_random_crew=self.get_random_crew,
@@ -80,6 +84,7 @@ class SteelmakingSimulator:
                 get_random_transfer_gap=self.get_random_transfer_gap,
                 aligned_device=self._aligned_device,
                 logger=logger,
+                events=self.events,
             )
         )
 
@@ -132,6 +137,7 @@ class SteelmakingSimulator:
         logger.debug("Simulation tick...")
         now = datetime.now(CST)
         self._tick_realtime_warnings(now)
+        self._tick_realtime_events(now)
 
         self.process_active_operations()
         self.process_pending_operations()
@@ -160,6 +166,9 @@ class SteelmakingSimulator:
 
     def _tick_realtime_warnings(self, now: datetime) -> None:
         self.warnings.tick_realtime_warnings(now)
+
+    def _tick_realtime_events(self, now: datetime) -> None:
+        self.events.tick_realtime_events(now)
 
     # --- Internal helpers ---
 

@@ -1,14 +1,16 @@
-"""Initialization seeding logic for operations and historical warnings."""
+"""Initialization seeding logic for operations, historical warnings, and events."""
 
 from __future__ import annotations
 
 import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from .config import EQUIPMENT, PROCESS_FLOW, PRO_LINE_CD, ProcessStatus, SimulationConfig
 from .warning_engine import WarningEngine
+from .event_engine import EventEngine
+from .event_generator import SpecialEventType
 
 
 @dataclass(frozen=True)
@@ -16,6 +18,7 @@ class SeedContext:
     db: any
     config: SimulationConfig
     warnings: WarningEngine
+    events: EventEngine
     generate_heat_no: any
     get_random_steel_grade: any
     get_random_crew: any
@@ -104,8 +107,17 @@ class OperationSeeder:
                         ("CCM", EQUIPMENT["CCM"]["proc_cd"], ccm_device, ccm_start, ccm_end),
                     ]
 
-                    for _name, proc_cd, device_no, plan_start, plan_end in stages:
-                        if plan_end <= now:
+                    # Track all operations for this heat for potential cancel handling
+                    heat_operations: List[Dict[str, Any]] = []
+                    canceled_from_stage: Optional[int] = None
+                    
+                    for stage_idx, (_name, proc_cd, device_no, plan_start, plan_end) in enumerate(stages):
+                        # If previous stage was canceled, this one is also canceled
+                        if canceled_from_stage is not None and stage_idx >= canceled_from_stage:
+                            proc_status = ProcessStatus.CANCELED
+                            real_start = None
+                            real_end = None
+                        elif plan_end <= now:
                             proc_status = ProcessStatus.COMPLETED
                             real_start = plan_start
                             real_end = plan_end
@@ -133,7 +145,19 @@ class OperationSeeder:
                             real_end_time=real_end,
                         )
 
+                        heat_operations.append({
+                            "id": operation_id,
+                            "stage_idx": stage_idx,
+                            "proc_cd": proc_cd,
+                            "device_no": device_no,
+                            "proc_status": proc_status,
+                            "plan_start": plan_start,
+                            "plan_end": plan_end,
+                        })
+
+                        # For completed operations, seed warnings and events
                         if proc_status == ProcessStatus.COMPLETED:
+                            # Seed historical warnings
                             self.ctx.warnings.seed_historical_warnings_for_completed_operation(
                                 operation_id=operation_id,
                                 heat_no=heat_no,
@@ -142,6 +166,43 @@ class OperationSeeder:
                                 crew_cd=crew_cd,
                                 window_start=plan_start,
                                 window_end=plan_end,
+                            )
+                            # Seed historical events (may trigger cancel)
+                            event_result = self.ctx.events.seed_historical_events_for_completed_operation(
+                                operation_id=operation_id,
+                                heat_no=heat_no,
+                                pro_line_cd=PRO_LINE_CD,
+                                proc_cd=proc_cd,
+                                device_no=device_no,
+                                window_start=plan_start,
+                                window_end=plan_end,
+                            )
+                            
+                            # If cancel event occurred, mark this and subsequent stages as canceled
+                            if event_result.has_cancel:
+                                canceled_from_stage = stage_idx
+                                # Update this operation to CANCELED status
+                                self.ctx.db.update_operation_status(
+                                    operation_id=operation_id,
+                                    proc_status=ProcessStatus.CANCELED,
+                                    real_end_time=event_result.cancel_event_time,
+                                )
+                                self.ctx.logger.info(
+                                    "Cancel event for heat %s at stage %s (%s), "
+                                    "marking subsequent operations as canceled",
+                                    heat_no, stage_idx, proc_cd
+                                )
+                        
+                        # For active operations, seed partial events (start + some middle events)
+                        elif proc_status == ProcessStatus.ACTIVE:
+                            self.ctx.events.seed_partial_events_for_active_operation(
+                                operation_id=operation_id,
+                                heat_no=heat_no,
+                                pro_line_cd=PRO_LINE_CD,
+                                proc_cd=proc_cd,
+                                device_no=device_no,
+                                window_start=real_start,
+                                now=now,
                             )
 
                     last_end_bof = bof_end

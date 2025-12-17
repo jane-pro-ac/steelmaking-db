@@ -1,13 +1,15 @@
 # Steelmaking Simulation – Agent Guide
 
-- **Purpose**: Continuously simulate steelmaking operations for demo/testing environments. It seeds and drives data in `steelmaking.steelmaking_operation` (and truncates `steelmaking_warning`) to mimic BOF → LF → CCM flows with realistic timing and crew assignments.
+- **Purpose**: Continuously simulate steelmaking operations for demo/testing environments. It seeds and drives data in `steelmaking.steelmaking_operation`, `steelmaking.steelmaking_warning`, and `steelmaking.steelmaking_event` tables to mimic BOF → LF → CCM flows with realistic timing, crew assignments, and event sequences.
 
 - **Project layout**:
   - `steelmaking_simulation/config.py`: Environment-configurable settings, equipment lists, process flow, and `CREW_CODES`.
-  - `steelmaking_simulation/database.py`: Thin Postgres access layer; handles inserts/updates/queries plus demo truncation of operation/warning tables.
-  - `steelmaking_simulation/simulator.py`: Orchestration layer wiring seeding, warnings, runtime processing, and heat creation.
-  - `steelmaking_simulation/seeding.py`: Initialization seeding of operations + historical warnings (enforces all timing constraints).
+  - `steelmaking_simulation/database.py`: Thin Postgres access layer; handles inserts/updates/queries plus demo truncation of operation/warning/event tables.
+  - `steelmaking_simulation/simulator.py`: Orchestration layer wiring seeding, warnings, events, runtime processing, and heat creation.
+  - `steelmaking_simulation/seeding.py`: Initialization seeding of operations + historical warnings + historical events (enforces all timing constraints).
   - `steelmaking_simulation/warning_engine.py`: Warning generation (historical seeding + real-time tick emissions + throttling).
+  - `steelmaking_simulation/event_engine.py`: Event generation (historical seeding + real-time tick emissions). Wraps `event_generator.py`.
+  - `steelmaking_simulation/event_generator.py`: Core event sequence generation logic with process-specific constraints, event codes, and Chinese message templates.
   - `steelmaking_simulation/operation_processor.py`: Runtime progression (complete active ops, start pending ops when ready, **does not mutate** `plan_start_time/plan_end_time`).
   - `steelmaking_simulation/heat_planner.py`: New heat creation (BOF starts now; LF/CCM planned within transfer window; aligned routing bias).
   - `steelmaking_simulation/scheduler.py`: Slot finder enforcing non-overlap and rest bounds (upper rest bound is planning-only; runtime enforces minimum rest only).
@@ -27,20 +29,22 @@
     - Routing preference: `ALIGNED_ROUTE_PROBABILITY` (default 0.9) biases BOF#i → LF#i → CCM#i (rare cross-routing still allowed)
     - Warnings: `MAX_WARNINGS_PER_OPERATION` (default 5), `WARNING_PROBABILITY_PER_TICK` (default 0.1)
     - Seed warnings: `SEED_WARNING_PROBABILITY_PER_COMPLETED_OPERATION` (default 0.25) controls how often completed operations get historical warnings during initialization.
-    - Demo seeding: `DEMO_SEED_*` knobs primarily shape the seeded time horizon/density around “now”.
+    - Demo seeding: `DEMO_SEED_*` knobs primarily shape the seeded time horizon/density around "now".
 
 - **Data model expectations**:
   - `steelmaking.steelmaking_operation` columns used: `heat_no`, `pro_line_cd`, `proc_cd`, `device_no`, `crew_cd`, `stl_grd_id`, `stl_grd_cd`, `proc_status`, `plan_start_time`, `plan_end_time`, `real_start_time`, `real_end_time`, `extra`. `crew_cd` must be one of `CREW_CODES` (A/B/C/D); `stl_grd_id` references `base.steel_grade.id`.
-  - `steelmaking.steelmaking_warning` is populated during seeding and ticks (truncated on startup together with operations); `heat_no` is BIGINT to mirror the operation table; schema uses `warning_time_start` and `warning_time_end`. Warning messages are generated in中文.
+    - `proc_status` values: 0=COMPLETED, 1=ACTIVE, 2=PENDING, 3=CANCELED (DB constraint allows 0-3).
+  - `steelmaking.steelmaking_warning` is populated during seeding and ticks (truncated on startup together with operations). Schema columns now exclude `operation_id`; only `heat_no`, `pro_line_cd`, `proc_cd`, `device_no`, `warning_code`, `warning_msg`, `warning_level`, `warning_time_start`, `warning_time_end`, `extra` are written. `extra` carries contextual metadata (`operation_id`, `crew_cd`) for traceability. Warning messages are generated in中文.
+  - `steelmaking.steelmaking_event` is populated during seeding and ticks (truncated on startup together with operations/warnings). Columns: `heat_no`, `pro_line_cd`, `proc_cd`, `device_no`, `event_code`, `event_msg`, `event_time_start`, `event_time_end`, `extra`. Event messages are generated in中文 with realistic parameters.
   - Heat number format: `YYMMNNNNN` where the last 5 digits auto-increment per month.
 
 - **Simulation behavior**:
-  - Seeding: On startup, truncates warnings/operations, then seeds a **continuous timeline of heats around “now”**. Each operation’s status is derived from its planned window relative to “now”:
+  - Seeding: On startup, truncates warnings/operations/events, then seeds a **continuous timeline of heats around "now"**. Each operation's status is derived from its planned window relative to "now":
     - `COMPLETED`: `plan_end_time <= now` and `real_start_time/real_end_time` are set (both before now)
     - `ACTIVE`: `plan_start_time <= now < plan_end_time`, `real_start_time` is set, and `real_end_time` is NULL
     - `PENDING`: `plan_start_time > now` and real times are NULL
     This ensures initialization always contains in-progress operations while keeping completed rows strictly in the past.
-  - Tick loop: Processes active ops (may complete them), starts pending ops once predecessors and device availability allow, and may create a new heat per tick with probability `NEW_HEAT_PROBABILITY`. Active ops may emit real-time-ish 中文 warnings anchored to the current tick time.
+  - Tick loop: Processes active ops (may complete them), starts pending ops once predecessors and device availability allow, and may create a new heat per tick with probability `NEW_HEAT_PROBABILITY`. Active ops may emit real-time-ish 中文 warnings and events anchored to the current tick time.
     - Note: BOF (first stage) pending operations start when `now >= plan_start_time` and a BOF device is available (no predecessor gate).
     - Runtime does **not** reschedule or rewrite planned timestamps. If upstream delays happen, real execution drifts while plans remain stable.
   - Timing & constraints (applied uniformly to seeding and runtime):
@@ -56,9 +60,38 @@
   - Warnings:
     - Initialization: **COMPLETED** operations get **historical warnings** seeded within their own operation time window for realistic demo data.
       - Historical warnings are intentionally **not** present on every completed operation; rate is controlled by `SEED_WARNING_PROBABILITY_PER_COMPLETED_OPERATION`.
-    - Runtime: Warnings are generated **near real-time** during ticks (anchored to “now”), and inserted in time order (not backfilled at random times within the historical plan window).
+    - Runtime: Warnings are generated **near real-time** during ticks (anchored to "now"), and inserted in time order (not backfilled at random times within the historical plan window).
     - Max **N warnings per operation** (`MAX_WARNINGS_PER_OPERATION`, default 5) and throttled to keep them reasonably dispersed across the operation runtime.
     - Duration distribution: almost always short (<10s), occasionally up to 1 minute, rarely longer; codes/messages are chosen from process-specific templates (plus common fallbacks).
+  - Events:
+    - Each operation generates a sequence of events following process-specific constraints defined in `steelmaking/event_code_constraints.md`.
+    - Event sequences follow a strict pattern:
+      1. **Start sequence**: Events like 钢包到达 → 处理开始 → 炉次开始
+      2. **Middle events**: Processing events like 加料, 测温, 取样, 喷吹, etc. (randomized with constraints)
+      3. **End sequence**: Events like 炉次结束 → 处理结束 → 钢包离开
+    - Paired events (e.g., 氧枪喷吹开始/结束, 通电开始/结束) always occur together.
+    - Follow-up events (e.g., 钢水取样 → 收到钢水化验) are emitted in sequence.
+    - **Special Events (取消/回炉)**:
+      - **取消 (Cancel)**: When a cancel event occurs (e.g., G12007 炉次取消), the current operation and all subsequent operations for the same heat are marked as `CANCELED` (proc_status=3). The event sequence ends early with a shortened end sequence.
+      - **回炉 (Rework)**: When a rework event occurs (e.g., G13007 炉次回炉), the operation continues to normal completion but is flagged for rework.
+      - Process-specific special events:
+        - **BOF**: G12007 炉次取消 only (no rework)
+        - **LF**: G13007 炉次回炉, G13008 炉次取消
+        - **RH**: G15007 炉次回炉, G15008 炉次取消
+        - **CCM**: G16015 炉次开浇取消 only (no rework)
+      - Probabilities are configurable via environment variables:
+        - `CANCEL_EVENT_PROBABILITY` (default 0.02 = 2% per operation)
+        - `REWORK_EVENT_PROBABILITY` (default 0.03 = 3% per operation)
+    - Event codes by process:
+      - **BOF (G12)**: G12001-G12028 (钢包到达, 加废钢, 兑铁水, 氧枪喷吹, 出钢, etc.)
+      - **LF (G13)**: G13001-G13025 (钢包到达, 加料, 喂丝, 通电, 吹氩, etc.)
+      - **RH (G15)**: G15001-G15025 (钢包到达, 抽真空, 达到高真空, 破空, etc.)
+      - **CCM (G16)**: G16001-G16022 (炉次到受包位, 炉次开浇, 中包测温, 铸坯产生, etc.)
+    - Historical events: **COMPLETED** operations get 8-20 events seeded with 95% probability.
+    - **Partial events for ACTIVE operations**: During initialization, **ACTIVE** operations (which have been running for some time) get partial events seeded via `EventEngine.seed_partial_events_for_active_operation()`. This generates the start sequence events plus some middle events proportional to how long the operation has been running. This ensures ACTIVE operations realistically have some events already generated.
+    - Real-time events: **ACTIVE** operations may emit events during ticks (max 15 per operation), with 30s minimum spacing.
+    - **End sequence events on completion**: When an active operation completes at runtime, the `EventEngine.emit_end_sequence_events()` method is called to emit any missing end sequence events (e.g., 炉次结束, 处理结束, 钢包离开 for BOF). This ensures operations always have proper ending events regardless of how many real-time events were emitted during the operation.
+    - Event messages are in Chinese and include realistic parameters (e.g., 温度值, 物料名称, 重量).
 
 - **Development tips**:
   - Keep schema alignment tight; update `database.py`, `simulator.py`, and docs whenever table columns change.
@@ -66,9 +99,12 @@
   - Logging is configured in `main.py`; adjust there for verbosity.
   - Avoid destructive DB commands beyond the intentional truncate in `DatabaseManager.clear_operations()`.
   - If you add warning generation, reuse `DatabaseManager.cursor()` for transactional safety and ensure both `warning_time_start` and `warning_time_end` are written.
-  - Unit checks: see `tests/test_simulator_constraints.py` for constraint coverage (no-overlap, device rest bounds, transfer gaps 20–30, active semantics, aligned routing preference, heat number generation behavior, real-time warning ordering/max, warning duration distribution).
+  - If you add new event codes or modify constraints, update `event_generator.py` (EVENT_CODES, EVENT_SEQUENCE_CONFIGS) and add corresponding tests.
+  - Unit checks: see `tests/test_simulator_constraints.py` for constraint coverage (no-overlap, device rest bounds, transfer gaps 20–30, active semantics, aligned routing preference, heat number generation behavior, real-time warning ordering/max, warning duration distribution, **end event generation on operation completion**, **partial event seeding for active operations**).
+  - Event tests: see `tests/test_event_generator.py` for event sequence validation, message generation, and constraint compliance.
 
 - **Maintenance checks**:
   - Sanity-test connection with `psql`/`poetry run python -c "from steelmaking_simulation import DatabaseConfig, DatabaseManager; DatabaseManager(DatabaseConfig()).connect()"`.
   - When changing process flow or equipment, update `PROCESS_FLOW`, `EQUIPMENT`, and any downstream logic that assumes BOF → LF → CCM order.
   - Validate generated timestamps stay within configured duration/gap bounds and honor sequential process rules before shipping changes.
+  - When updating event constraints, refer to `steelmaking/event_code_constraints.md` for the authoritative sequence rules.

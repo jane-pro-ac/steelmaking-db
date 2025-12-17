@@ -25,7 +25,7 @@ class DatabaseConfig:
 class SimulationConfig:
     """Simulation parameters configuration."""
     # Time interval between simulation ticks (seconds)
-    interval: int = int(os.getenv("SIMULATION_INTERVAL", "5"))
+    interval: int = int(os.getenv("SIMULATION_INTERVAL", "2"))
     
     # Probability of starting a new heat each tick
     new_heat_probability: float = float(os.getenv("NEW_HEAT_PROBABILITY", "0.3"))
@@ -47,10 +47,10 @@ class SimulationConfig:
     aligned_route_probability: float = float(os.getenv("ALIGNED_ROUTE_PROBABILITY", "0.9"))
 
     # Warnings
-    max_warnings_per_operation: int = int(os.getenv("MAX_WARNINGS_PER_OPERATION", "5"))
-    warning_probability_per_tick: float = float(os.getenv("WARNING_PROBABILITY_PER_TICK", "0.01"))
+    max_warnings_per_operation: int = int(os.getenv("MAX_WARNINGS_PER_OPERATION", "10"))
+    warning_probability_per_tick: float = float(os.getenv("WARNING_PROBABILITY_PER_TICK", "0.2"))
     seed_warning_probability_per_completed_operation: float = float(
-        os.getenv("SEED_WARNING_PROBABILITY_PER_COMPLETED_OPERATION", "0.25")
+        os.getenv("SEED_WARNING_PROBABILITY_PER_COMPLETED_OPERATION", "0.2")
     )
 
     # Gap between operations range (minutes)
@@ -93,3 +93,35 @@ class ProcessStatus:
     COMPLETED = 0
     ACTIVE = 1
     PENDING = 2
+    CANCELED = 3  # Operation was canceled
+
+
+# Special event configuration for 取消/回炉 events
+# Each process can have:
+#   - cancel_event: Event code that triggers cancellation (current + subsequent processes canceled)
+#   - rework_event: Event code that triggers rework (process continues from 处理开始)
+# Probabilities are configurable via environment variables
+SPECIAL_EVENT_CONFIG = {
+    "BOF": {
+        "cancel_event": "G12007",  # 炉次取消
+        "rework_event": None,       # BOF has no rework
+    },
+    "LF": {
+        "cancel_event": "G13008",  # 炉次取消
+        "rework_event": "G13007",  # 炉次回炉
+    },
+    "RH": {
+        "cancel_event": "G15008",  # 炉次取消
+        "rework_event": "G15007",  # 炉次回炉
+    },
+    "CCM": {
+        "cancel_event": "G16015",  # 炉次开浇取消
+        "rework_event": None,       # CCM has no rework
+    },
+}
+
+# Environment variable driven probabilities for special events
+# These are probabilities per-operation during historical seeding
+import os as _os
+CANCEL_EVENT_PROBABILITY = float(_os.getenv("CANCEL_EVENT_PROBABILITY", "0.02"))  # 2% chance
+REWORK_EVENT_PROBABILITY = float(_os.getenv("REWORK_EVENT_PROBABILITY", "0.03"))  # 3% chance

@@ -1,7 +1,7 @@
 """Database operations for steelmaking simulation."""
 
 import psycopg2
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import RealDictCursor, Json
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 from contextlib import contextmanager
@@ -243,10 +243,11 @@ class DatabaseManager:
             return cur.fetchall()
 
     def clear_operations(self):
-        """Remove all operations (demo reset)."""
+        """Remove all operations, warnings, and events (demo reset)."""
         with self.cursor() as cur:
             cur.execute("""
-                TRUNCATE steelmaking.steelmaking_warning,
+                TRUNCATE steelmaking.steelmaking_event,
+                         steelmaking.steelmaking_warning,
                          steelmaking.steelmaking_operation
                 RESTART IDENTITY CASCADE
             """)
@@ -254,12 +255,10 @@ class DatabaseManager:
     def insert_warning(
         self,
         *,
-        operation_id: int,
         heat_no: int,
         pro_line_cd: str,
         proc_cd: str,
         device_no: str,
-        crew_cd: str,
         warning_level: int,
         warning_msg: str,
         warning_time_start: datetime,
@@ -267,59 +266,247 @@ class DatabaseManager:
         warning_code: Optional[str] = None,
         extra: Optional[Dict[str, Any]] = None,
     ) -> int:
-        """Insert a warning linked to an operation."""
+        """Insert a warning event (operation_id column removed from schema)."""
         with self.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO steelmaking.steelmaking_warning (
-                    operation_id, heat_no, pro_line_cd, proc_cd, device_no, crew_cd,
-                    warning_code, warning_msg, warning_level, warning_time_start, warning_time_end, extra
+                    heat_no, pro_line_cd, proc_cd, device_no,
+                    warning_code, warning_msg, warning_level,
+                    warning_time_start, warning_time_end, extra
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
-                    operation_id,
                     heat_no,
                     pro_line_cd,
                     proc_cd,
                     device_no,
-                    crew_cd,
                     warning_code,
                     warning_msg,
                     warning_level,
                     warning_time_start,
                     warning_time_end,
-                    extra,
+                    Json(extra) if extra is not None else None,
                 ),
             )
             result = cur.fetchone()
             return result["id"]
 
-    def get_operation_warning_count(self, operation_id: int) -> int:
-        """Return number of warnings already emitted for an operation."""
+    def get_operation_warning_count(
+        self,
+        *,
+        heat_no: int,
+        proc_cd: str,
+        device_no: str,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> int:
+        """Return number of warnings already emitted within an operation window."""
         with self.cursor() as cur:
             cur.execute(
                 """
                 SELECT COUNT(*) AS n
                 FROM steelmaking.steelmaking_warning
-                WHERE operation_id = %s
+                WHERE heat_no = %s
+                  AND proc_cd = %s
+                  AND device_no = %s
+                  AND warning_time_start >= %s
+                  AND warning_time_start <= %s
                 """,
-                (operation_id,),
+                (heat_no, proc_cd, device_no, window_start, window_end),
             )
             row = cur.fetchone()
             return int(row["n"]) if row else 0
 
-    def get_operation_last_warning_end_time(self, operation_id: int):
-        """Return the latest warning_time_end for an operation, or None."""
+    def get_operation_last_warning_end_time(
+        self,
+        *,
+        heat_no: int,
+        proc_cd: str,
+        device_no: str,
+        window_start: datetime,
+        window_end: datetime,
+    ):
+        """Return the latest warning_time_end for an operation window, or None."""
         with self.cursor() as cur:
             cur.execute(
                 """
                 SELECT MAX(warning_time_end) AS last_end
                 FROM steelmaking.steelmaking_warning
-                WHERE operation_id = %s
+                WHERE heat_no = %s
+                  AND proc_cd = %s
+                  AND device_no = %s
+                  AND warning_time_start >= %s
+                  AND warning_time_start <= %s
                 """,
-                (operation_id,),
+                (heat_no, proc_cd, device_no, window_start, window_end),
             )
             row = cur.fetchone()
             return row["last_end"] if row else None
+
+    # -------------------- Event Methods --------------------
+
+    def insert_event(
+        self,
+        *,
+        heat_no: int,
+        pro_line_cd: str,
+        proc_cd: str,
+        device_no: str,
+        event_code: Optional[str],
+        event_msg: str,
+        event_time_start: datetime,
+        event_time_end: datetime,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Insert a steelmaking event."""
+        with self.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO steelmaking.steelmaking_event (
+                    heat_no, pro_line_cd, proc_cd, device_no,
+                    event_code, event_msg, event_time_start, event_time_end, extra
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    heat_no,
+                    pro_line_cd,
+                    proc_cd,
+                    device_no,
+                    event_code,
+                    event_msg,
+                    event_time_start,
+                    event_time_end,
+                    Json(extra) if extra is not None else None,
+                ),
+            )
+            result = cur.fetchone()
+            return result["id"]
+
+    def insert_events_batch(
+        self,
+        events: List[Dict[str, Any]],
+    ) -> int:
+        """Insert multiple events in a batch.
+        
+        Args:
+            events: List of event dictionaries with keys:
+                heat_no, pro_line_cd, proc_cd, device_no,
+                event_code, event_msg, event_time_start, event_time_end, extra
+                
+        Returns:
+            Number of events inserted
+        """
+        if not events:
+            return 0
+        
+        with self.cursor() as cur:
+            values = []
+            for e in events:
+                values.append((
+                    e["heat_no"],
+                    e["pro_line_cd"],
+                    e["proc_cd"],
+                    e["device_no"],
+                    e.get("event_code"),
+                    e["event_msg"],
+                    e["event_time_start"],
+                    e["event_time_end"],
+                    Json(e.get("extra")) if e.get("extra") is not None else None,
+                ))
+            
+            from psycopg2.extras import execute_values
+            execute_values(
+                cur,
+                """
+                INSERT INTO steelmaking.steelmaking_event (
+                    heat_no, pro_line_cd, proc_cd, device_no,
+                    event_code, event_msg, event_time_start, event_time_end, extra
+                )
+                VALUES %s
+                """,
+                values,
+            )
+            return len(values)
+
+    def get_operation_event_count(
+        self,
+        *,
+        heat_no: int,
+        proc_cd: str,
+        device_no: str,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> int:
+        """Return number of events already emitted within an operation window."""
+        with self.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM steelmaking.steelmaking_event
+                WHERE heat_no = %s
+                  AND proc_cd = %s
+                  AND device_no = %s
+                  AND event_time_start >= %s
+                  AND event_time_start <= %s
+                """,
+                (heat_no, proc_cd, device_no, window_start, window_end),
+            )
+            row = cur.fetchone()
+            return int(row["n"]) if row else 0
+
+    def get_operation_last_event_time(
+        self,
+        *,
+        heat_no: int,
+        proc_cd: str,
+        device_no: str,
+        window_start: datetime,
+        window_end: datetime,
+    ):
+        """Return the latest event_time_start for an operation window, or None."""
+        with self.cursor() as cur:
+            cur.execute(
+                """
+                SELECT MAX(event_time_start) AS last_time
+                FROM steelmaking.steelmaking_event
+                WHERE heat_no = %s
+                  AND proc_cd = %s
+                  AND device_no = %s
+                  AND event_time_start >= %s
+                  AND event_time_start <= %s
+                """,
+                (heat_no, proc_cd, device_no, window_start, window_end),
+            )
+            row = cur.fetchone()
+            return row["last_time"] if row else None
+
+    def get_operation_events(
+        self,
+        *,
+        heat_no: int,
+        proc_cd: str,
+        device_no: str,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> List[Dict[str, Any]]:
+        """Return all events for an operation within the given time window."""
+        with self.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, event_code, event_msg, event_time_start, event_time_end
+                FROM steelmaking.steelmaking_event
+                WHERE heat_no = %s
+                  AND proc_cd = %s
+                  AND device_no = %s
+                  AND event_time_start >= %s
+                  AND event_time_start <= %s
+                ORDER BY event_time_start
+                """,
+                (heat_no, proc_cd, device_no, window_start, window_end),
+            )
+            return [dict(row) for row in cur.fetchall()]

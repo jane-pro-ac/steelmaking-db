@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta
 
 import pytest
@@ -20,10 +21,12 @@ class FakeDatabaseManager:
     def __init__(self):
         self.operations = []
         self.warnings = []
+        self.events = []
 
     def clear_operations(self):
         self.operations = []
         self.warnings = []
+        self.events = []
 
     def get_steel_grades(self):
         return [{"id": 1, "stl_grd_cd": "G-TEST", "stl_grd_nm": "Test Grade"}]
@@ -69,16 +72,60 @@ class FakeDatabaseManager:
         )
         return op_id
 
-    def insert_warning(self, **kwargs):
+    def insert_warning(
+        self,
+        *,
+        heat_no,
+        pro_line_cd,
+        proc_cd,
+        device_no,
+        warning_code,
+        warning_msg,
+        warning_level,
+        warning_time_start,
+        warning_time_end,
+        extra=None,
+    ):
         warn_id = len(self.warnings) + 1
-        self.warnings.append({"id": warn_id, **kwargs})
+        self.warnings.append(
+            {
+                "id": warn_id,
+                "heat_no": heat_no,
+                "pro_line_cd": pro_line_cd,
+                "proc_cd": proc_cd,
+                "device_no": device_no,
+                "warning_code": warning_code,
+                "warning_msg": warning_msg,
+                "warning_level": warning_level,
+                "warning_time_start": warning_time_start,
+                "warning_time_end": warning_time_end,
+                "extra": extra,
+            }
+        )
         return warn_id
 
-    def get_operation_warning_count(self, operation_id: int) -> int:
-        return sum(1 for w in self.warnings if w.get("operation_id") == operation_id)
+    def get_operation_warning_count(self, *, heat_no, proc_cd, device_no, window_start, window_end) -> int:
+        return sum(
+            1
+            for w in self.warnings
+            if w.get("heat_no") == heat_no
+            and w.get("proc_cd") == proc_cd
+            and w.get("device_no") == device_no
+            and w.get("warning_time_start") >= window_start
+            and w.get("warning_time_start") <= window_end
+        )
 
-    def get_operation_last_warning_end_time(self, operation_id: int):
-        ends = [w.get("warning_time_end") for w in self.warnings if w.get("operation_id") == operation_id and w.get("warning_time_end")]
+    def get_operation_last_warning_end_time(self, *, heat_no, proc_cd, device_no, window_start, window_end):
+        ends = [
+            w.get("warning_time_end")
+            for w in self.warnings
+            if w.get("heat_no") == heat_no
+            and w.get("proc_cd") == proc_cd
+            and w.get("device_no") == device_no
+            and w.get("warning_time_start") >= window_start
+            and w.get("warning_time_start") <= window_end
+            and w.get("warning_time_end")
+        ]
         return max(ends) if ends else None
 
     def get_active_operations(self):
@@ -152,6 +199,87 @@ class FakeDatabaseManager:
         windows.sort(key=lambda op: op["real_start_time"] or op["plan_start_time"])
         return windows
 
+    # Event methods
+    def insert_event(
+        self,
+        *,
+        heat_no,
+        pro_line_cd,
+        proc_cd,
+        device_no,
+        event_code,
+        event_msg,
+        event_time_start,
+        event_time_end,
+        extra=None,
+    ):
+        event_id = len(self.events) + 1
+        self.events.append(
+            {
+                "id": event_id,
+                "heat_no": heat_no,
+                "pro_line_cd": pro_line_cd,
+                "proc_cd": proc_cd,
+                "device_no": device_no,
+                "event_code": event_code,
+                "event_msg": event_msg,
+                "event_time_start": event_time_start,
+                "event_time_end": event_time_end,
+                "extra": extra,
+            }
+        )
+        return event_id
+
+    def insert_events_batch(self, events):
+        count = 0
+        for e in events:
+            self.insert_event(
+                heat_no=e["heat_no"],
+                pro_line_cd=e["pro_line_cd"],
+                proc_cd=e["proc_cd"],
+                device_no=e["device_no"],
+                event_code=e.get("event_code"),
+                event_msg=e["event_msg"],
+                event_time_start=e["event_time_start"],
+                event_time_end=e["event_time_end"],
+                extra=e.get("extra"),
+            )
+            count += 1
+        return count
+
+    def get_operation_event_count(self, *, heat_no, proc_cd, device_no, window_start, window_end) -> int:
+        return sum(
+            1
+            for e in self.events
+            if e.get("heat_no") == heat_no
+            and e.get("proc_cd") == proc_cd
+            and e.get("device_no") == device_no
+            and e.get("event_time_start") >= window_start
+            and e.get("event_time_start") <= window_end
+        )
+
+    def get_operation_last_event_time(self, *, heat_no, proc_cd, device_no, window_start, window_end):
+        times = [
+            e.get("event_time_start")
+            for e in self.events
+            if e.get("heat_no") == heat_no
+            and e.get("proc_cd") == proc_cd
+            and e.get("device_no") == device_no
+            and e.get("event_time_start") >= window_start
+            and e.get("event_time_start") <= window_end
+        ]
+        return max(times) if times else None
+
+    def get_operation_events(self, *, heat_no, proc_cd, device_no, window_start, window_end):
+        return [
+            e for e in self.events
+            if e.get("heat_no") == heat_no
+            and e.get("proc_cd") == proc_cd
+            and e.get("device_no") == device_no
+            and e.get("event_time_start") >= window_start
+            and e.get("event_time_start") <= window_end
+        ]
+
     # Compatibility stubs
     def connect(self): ...
     def close(self): ...
@@ -194,6 +322,11 @@ def simulator(fixed_now):
     sim.config.seed_active_heats = 1
     sim.config.seed_future_heats = 4
     sim.config.seed_warning_probability_per_completed_operation = 0.25
+    # Disable cancel/rework events for constraint tests to avoid timeline gaps
+    sim.events.event_config.cancel_event_probability = 0.0
+    sim.events.event_config.rework_event_probability = 0.0
+    sim.events.generator.cancel_probability = 0.0
+    sim.events.generator.rework_probability = 0.0
     return sim
 
 
@@ -212,6 +345,18 @@ def _device_timelines(ops):
     return by_device
 
 
+def _warnings_for_operation(warnings, operation):
+    start, end = _derive_window(operation)
+    return [
+        w
+        for w in warnings
+        if w["heat_no"] == operation["heat_no"]
+        and w["proc_cd"] == operation["proc_cd"]
+        and w["device_no"] == operation["device_no"]
+        and start <= w["warning_time_start"] <= end
+    ]
+
+
 def test_initialization_respects_constraints(simulator, fixed_now):
     simulator.initialize()
     ops = simulator.db.operations
@@ -219,6 +364,9 @@ def test_initialization_respects_constraints(simulator, fixed_now):
 
     # Durations within 30-50 minutes
     for op in ops:
+        # Skip canceled operations for duration check
+        if op.get("proc_status") == ProcessStatus.CANCELED:
+            continue
         start, end = _derive_window(op)
         minutes = (end - start).total_seconds() / 60
         assert config.min_operation_duration - 0.5 <= minutes <= config.max_operation_duration + 0.5
@@ -416,7 +564,8 @@ def test_realtime_warnings_time_order_and_max_per_operation(fixed_now):
     for t in times:
         sim._tick_realtime_warnings(t)
 
-    warnings = [w for w in db.warnings if w["operation_id"] == op_id]
+    op = next(o for o in db.operations if o["id"] == op_id)
+    warnings = _warnings_for_operation(db.warnings, op)
     assert len(warnings) <= sim.config.max_warnings_per_operation
     assert warnings, "Expected at least one warning when probability=1.0"
 
@@ -435,9 +584,7 @@ def test_initialization_seeds_warnings_for_completed_operations(simulator, fixed
     completed_ops = [op for op in ops if op["proc_status"] == ProcessStatus.COMPLETED]
     assert completed_ops, "Need completed ops to validate historical warning seeding"
 
-    by_op = {}
-    for w in warnings:
-        by_op.setdefault(w["operation_id"], []).append(w)
+    by_op = {op["id"]: _warnings_for_operation(warnings, op) for op in completed_ops}
 
     completed_with_warnings = [op for op in completed_ops if by_op.get(op["id"])]
     assert completed_with_warnings, "Expected at least some completed ops to have warnings"
@@ -595,3 +742,507 @@ def test_pending_lf_can_start_after_missing_transfer_window(fixed_now):
     assert lf["proc_status"] == ProcessStatus.ACTIVE
     assert lf["real_start_time"] == fixed_now
     assert lf["real_end_time"] is None
+
+
+def test_operation_completion_emits_end_events(fixed_now):
+    """Test that completing an operation emits the correct end sequence events.
+    
+    This test verifies that when an active BOF operation is completed,
+    the end sequence events (出钢开始, 出钢结束, 底吹开始, 底吹结束, 
+    炉次结束, 处理结束, 钢包离开) are properly generated.
+    """
+    from steelmaking_simulation.event_generator import EVENT_SEQUENCE_CONFIGS
+    
+    db = FakeDatabaseManager()
+    sim = SteelmakingSimulator(DatabaseConfig(), SimulationConfig(), db_manager=db)
+    
+    # Create an active BOF operation
+    heat_no = 240100200
+    device_no = EQUIPMENT["BOF"]["devices"][0]
+    proc_cd = EQUIPMENT["BOF"]["proc_cd"]
+    start_time = fixed_now - timedelta(minutes=40)  # Started 40 minutes ago
+    plan_end = fixed_now + timedelta(minutes=10)
+    
+    op_id = db.insert_operation(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        crew_cd="A",
+        stl_grd_id=1,
+        stl_grd_cd="G-TEST",
+        proc_status=ProcessStatus.ACTIVE,
+        plan_start_time=start_time,
+        plan_end_time=plan_end,
+        real_start_time=start_time,
+        real_end_time=None,
+    )
+    
+    # Add some start sequence events (simulating real-time event generation)
+    db.insert_event(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        event_code="G12001",  # 钢包到达
+        event_msg="钢包到达",
+        event_time_start=start_time,
+        event_time_end=start_time,
+    )
+    db.insert_event(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        event_code="G12003",  # 处理开始
+        event_msg="处理开始",
+        event_time_start=start_time + timedelta(seconds=30),
+        event_time_end=start_time + timedelta(seconds=30),
+    )
+    db.insert_event(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        event_code="G12005",  # 炉次开始
+        event_msg="炉次开始",
+        event_time_start=start_time + timedelta(seconds=60),
+        event_time_end=start_time + timedelta(seconds=60),
+    )
+    # Add some middle events
+    db.insert_event(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        event_code="G12008",  # 加料
+        event_msg="加料",
+        event_time_start=start_time + timedelta(minutes=10),
+        event_time_end=start_time + timedelta(minutes=10),
+    )
+    
+    initial_event_count = len(db.events)
+    
+    # Process active operations - this should complete the operation and emit end events
+    # Force completion by making operation past max duration
+    operation = db.operations[0]
+    
+    # Manually trigger completion through the processor
+    sim.processor._complete_operation(operation, fixed_now)
+    
+    # Verify operation is now completed
+    op = db.operations[0]
+    assert op["proc_status"] == ProcessStatus.COMPLETED
+    assert op["real_end_time"] == fixed_now
+    
+    # Verify end events were emitted
+    final_event_count = len(db.events)
+    assert final_event_count > initial_event_count, "End events should have been emitted"
+    
+    # Check that the correct end sequence events exist
+    end_sequence = EVENT_SEQUENCE_CONFIGS["BOF"].end_sequence
+    event_codes = [e["event_code"] for e in db.events if e["heat_no"] == heat_no]
+    
+    # All end sequence events should now be present
+    for code in end_sequence:
+        assert code in event_codes, f"Missing end event {code}"
+
+
+def test_operation_completion_does_not_duplicate_end_events(fixed_now):
+    """Test that end events are not duplicated if they already exist."""
+    from steelmaking_simulation.event_generator import EVENT_SEQUENCE_CONFIGS
+    
+    db = FakeDatabaseManager()
+    sim = SteelmakingSimulator(DatabaseConfig(), SimulationConfig(), db_manager=db)
+    
+    heat_no = 240100201
+    device_no = EQUIPMENT["BOF"]["devices"][0]
+    proc_cd = EQUIPMENT["BOF"]["proc_cd"]
+    start_time = fixed_now - timedelta(minutes=40)
+    plan_end = fixed_now + timedelta(minutes=10)
+    
+    op_id = db.insert_operation(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        crew_cd="A",
+        stl_grd_id=1,
+        stl_grd_cd="G-TEST",
+        proc_status=ProcessStatus.ACTIVE,
+        plan_start_time=start_time,
+        plan_end_time=plan_end,
+        real_start_time=start_time,
+        real_end_time=None,
+    )
+    
+    # Add start sequence events
+    for i, code in enumerate(EVENT_SEQUENCE_CONFIGS["BOF"].start_sequence):
+        db.insert_event(
+            heat_no=heat_no,
+            pro_line_cd="G1",
+            proc_cd=proc_cd,
+            device_no=device_no,
+            event_code=code,
+            event_msg=f"Event {code}",
+            event_time_start=start_time + timedelta(seconds=i*30),
+            event_time_end=start_time + timedelta(seconds=i*30),
+        )
+    
+    # Add ALL end sequence events (simulating they were already generated)
+    for i, code in enumerate(EVENT_SEQUENCE_CONFIGS["BOF"].end_sequence):
+        db.insert_event(
+            heat_no=heat_no,
+            pro_line_cd="G1",
+            proc_cd=proc_cd,
+            device_no=device_no,
+            event_code=code,
+            event_msg=f"Event {code}",
+            event_time_start=fixed_now - timedelta(minutes=5) + timedelta(seconds=i*30),
+            event_time_end=fixed_now - timedelta(minutes=5) + timedelta(seconds=i*30),
+        )
+    
+    initial_event_count = len(db.events)
+    
+    # Complete the operation
+    operation = db.operations[0]
+    sim.processor._complete_operation(operation, fixed_now)
+    
+    # Verify no duplicate events were added
+    final_event_count = len(db.events)
+    assert final_event_count == initial_event_count, "No new events should be added if all end events exist"
+
+
+def test_emit_end_sequence_for_lf_operation(fixed_now):
+    """Test end sequence generation for LF process."""
+    from steelmaking_simulation.event_generator import EVENT_SEQUENCE_CONFIGS
+    
+    db = FakeDatabaseManager()
+    sim = SteelmakingSimulator(DatabaseConfig(), SimulationConfig(), db_manager=db)
+    
+    heat_no = 240100202
+    device_no = EQUIPMENT["LF"]["devices"][0]
+    proc_cd = EQUIPMENT["LF"]["proc_cd"]
+    start_time = fixed_now - timedelta(minutes=40)
+    plan_end = fixed_now + timedelta(minutes=10)
+    
+    db.insert_operation(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        crew_cd="A",
+        stl_grd_id=1,
+        stl_grd_cd="G-TEST",
+        proc_status=ProcessStatus.ACTIVE,
+        plan_start_time=start_time,
+        plan_end_time=plan_end,
+        real_start_time=start_time,
+        real_end_time=None,
+    )
+    
+    # Add start events only
+    for i, code in enumerate(EVENT_SEQUENCE_CONFIGS["LF"].start_sequence):
+        db.insert_event(
+            heat_no=heat_no,
+            pro_line_cd="G1",
+            proc_cd=proc_cd,
+            device_no=device_no,
+            event_code=code,
+            event_msg=f"Event {code}",
+            event_time_start=start_time + timedelta(seconds=i*30),
+            event_time_end=start_time + timedelta(seconds=i*30),
+        )
+    
+    operation = db.operations[0]
+    sim.processor._complete_operation(operation, fixed_now)
+    
+    # Verify LF end sequence events exist (G13006, G13004, G13002)
+    event_codes = [e["event_code"] for e in db.events if e["heat_no"] == heat_no]
+    lf_end_sequence = EVENT_SEQUENCE_CONFIGS["LF"].end_sequence
+    
+    for code in lf_end_sequence:
+        assert code in event_codes, f"Missing LF end event {code}"
+
+
+def test_emit_end_sequence_for_ccm_operation(fixed_now):
+    """Test end sequence generation for CCM process."""
+    from steelmaking_simulation.event_generator import EVENT_SEQUENCE_CONFIGS
+    
+    db = FakeDatabaseManager()
+    sim = SteelmakingSimulator(DatabaseConfig(), SimulationConfig(), db_manager=db)
+    
+    heat_no = 240100203
+    device_no = EQUIPMENT["CCM"]["devices"][0]
+    proc_cd = EQUIPMENT["CCM"]["proc_cd"]
+    start_time = fixed_now - timedelta(minutes=40)
+    plan_end = fixed_now + timedelta(minutes=10)
+    
+    db.insert_operation(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        crew_cd="A",
+        stl_grd_id=1,
+        stl_grd_cd="G-TEST",
+        proc_status=ProcessStatus.ACTIVE,
+        plan_start_time=start_time,
+        plan_end_time=plan_end,
+        real_start_time=start_time,
+        real_end_time=None,
+    )
+    
+    # Add start events only
+    for i, code in enumerate(EVENT_SEQUENCE_CONFIGS["CCM"].start_sequence):
+        db.insert_event(
+            heat_no=heat_no,
+            pro_line_cd="G1",
+            proc_cd=proc_cd,
+            device_no=device_no,
+            event_code=code,
+            event_msg=f"Event {code}",
+            event_time_start=start_time + timedelta(seconds=i*30),
+            event_time_end=start_time + timedelta(seconds=i*30),
+        )
+    
+    operation = db.operations[0]
+    sim.processor._complete_operation(operation, fixed_now)
+    
+    # Verify CCM end sequence events exist
+    event_codes = [e["event_code"] for e in db.events if e["heat_no"] == heat_no]
+    ccm_end_sequence = EVENT_SEQUENCE_CONFIGS["CCM"].end_sequence
+    
+    for code in ccm_end_sequence:
+        assert code in event_codes, f"Missing CCM end event {code}"
+
+
+def test_active_operations_have_partial_events_after_initialization(fixed_now):
+    """Test that ACTIVE operations have partial events seeded during initialization.
+    
+    When the simulator initializes, ACTIVE operations should already have some
+    events (start sequence + some middle events) since they have been running
+    for some time.
+    """
+    from steelmaking_simulation.event_generator import EVENT_SEQUENCE_CONFIGS
+    from steelmaking_simulation.event_engine import EventEngine, EventEngineConfig
+    
+    db = FakeDatabaseManager()
+    config = SimulationConfig()
+    
+    # Create event engine
+    event_engine = EventEngine(
+        db=db,
+        config=config,
+        get_process_name=lambda pc: {"G12": "BOF", "G13": "LF", "G16": "CCM"}.get(pc),
+        logger=logging.getLogger("test"),
+    )
+    
+    # Create an active BOF operation that started 20 minutes ago
+    heat_no = 240100300
+    device_no = EQUIPMENT["BOF"]["devices"][0]
+    proc_cd = EQUIPMENT["BOF"]["proc_cd"]
+    start_time = fixed_now - timedelta(minutes=20)
+    
+    op_id = db.insert_operation(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        crew_cd="A",
+        stl_grd_id=1,
+        stl_grd_cd="G-TEST",
+        proc_status=ProcessStatus.ACTIVE,
+        plan_start_time=start_time,
+        plan_end_time=start_time + timedelta(minutes=40),
+        real_start_time=start_time,
+        real_end_time=None,
+    )
+    
+    # Call partial event seeding
+    count = event_engine.seed_partial_events_for_active_operation(
+        operation_id=op_id,
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        window_start=start_time,
+        now=fixed_now,
+    )
+    
+    assert count > 0, "Should have generated some partial events"
+    
+    # Check that start sequence events exist
+    event_codes = [e["event_code"] for e in db.events if e["heat_no"] == heat_no]
+    bof_start_seq = EVENT_SEQUENCE_CONFIGS["BOF"].start_sequence
+    
+    for code in bof_start_seq:
+        assert code in event_codes, f"Missing start event {code}"
+    
+    # Check that all events are within the time window
+    for e in db.events:
+        if e["heat_no"] == heat_no:
+            assert e["event_time_start"] >= start_time, "Event should be after operation start"
+            assert e["event_time_start"] <= fixed_now, "Event should be before or at now"
+
+
+def test_active_operations_have_start_events_at_minimum(fixed_now):
+    """Test that even if operation just started, it should have start sequence events."""
+    from steelmaking_simulation.event_generator import EVENT_SEQUENCE_CONFIGS
+    from steelmaking_simulation.event_engine import EventEngine, EventEngineConfig
+    
+    db = FakeDatabaseManager()
+    config = SimulationConfig()
+    
+    event_engine = EventEngine(
+        db=db,
+        config=config,
+        get_process_name=lambda pc: {"G12": "BOF", "G13": "LF", "G16": "CCM"}.get(pc),
+        logger=logging.getLogger("test"),
+    )
+    
+    # Create an active LF operation that started only 5 minutes ago
+    heat_no = 240100301
+    device_no = EQUIPMENT["LF"]["devices"][0]
+    proc_cd = EQUIPMENT["LF"]["proc_cd"]
+    start_time = fixed_now - timedelta(minutes=5)
+    
+    op_id = db.insert_operation(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        crew_cd="A",
+        stl_grd_id=1,
+        stl_grd_cd="G-TEST",
+        proc_status=ProcessStatus.ACTIVE,
+        plan_start_time=start_time,
+        plan_end_time=start_time + timedelta(minutes=40),
+        real_start_time=start_time,
+        real_end_time=None,
+    )
+    
+    count = event_engine.seed_partial_events_for_active_operation(
+        operation_id=op_id,
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        window_start=start_time,
+        now=fixed_now,
+    )
+    
+    # Should have at least the start sequence
+    lf_start_seq = EVENT_SEQUENCE_CONFIGS["LF"].start_sequence
+    assert count >= len(lf_start_seq), f"Should have at least {len(lf_start_seq)} start events"
+    
+    event_codes = [e["event_code"] for e in db.events if e["heat_no"] == heat_no]
+    for code in lf_start_seq:
+        assert code in event_codes, f"Missing LF start event {code}"
+
+
+def test_long_running_active_operation_has_middle_events(fixed_now):
+    """Test that an operation running for a long time has middle events too."""
+    from steelmaking_simulation.event_generator import EVENT_SEQUENCE_CONFIGS
+    from steelmaking_simulation.event_engine import EventEngine, EventEngineConfig
+    
+    db = FakeDatabaseManager()
+    config = SimulationConfig()
+    
+    event_engine = EventEngine(
+        db=db,
+        config=config,
+        get_process_name=lambda pc: {"G12": "BOF", "G13": "LF", "G16": "CCM"}.get(pc),
+        logger=logging.getLogger("test"),
+    )
+    
+    # Create an active BOF operation that started 35 minutes ago (near completion)
+    heat_no = 240100302
+    device_no = EQUIPMENT["BOF"]["devices"][0]
+    proc_cd = EQUIPMENT["BOF"]["proc_cd"]
+    start_time = fixed_now - timedelta(minutes=35)
+    
+    op_id = db.insert_operation(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        crew_cd="A",
+        stl_grd_id=1,
+        stl_grd_cd="G-TEST",
+        proc_status=ProcessStatus.ACTIVE,
+        plan_start_time=start_time,
+        plan_end_time=start_time + timedelta(minutes=40),
+        real_start_time=start_time,
+        real_end_time=None,
+    )
+    
+    count = event_engine.seed_partial_events_for_active_operation(
+        operation_id=op_id,
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        window_start=start_time,
+        now=fixed_now,
+    )
+    
+    bof_start_seq = EVENT_SEQUENCE_CONFIGS["BOF"].start_sequence
+    
+    # Should have more events than just the start sequence
+    # (since operation has been running for 35 minutes)
+    assert count > len(bof_start_seq), \
+        f"Long-running operation should have middle events too. Got {count} events, start seq has {len(bof_start_seq)}"
+
+
+def test_partial_events_do_not_include_end_sequence(fixed_now):
+    """Test that partial events for active operations do NOT include end sequence."""
+    from steelmaking_simulation.event_generator import EVENT_SEQUENCE_CONFIGS
+    from steelmaking_simulation.event_engine import EventEngine, EventEngineConfig
+    
+    db = FakeDatabaseManager()
+    config = SimulationConfig()
+    
+    event_engine = EventEngine(
+        db=db,
+        config=config,
+        get_process_name=lambda pc: {"G12": "BOF", "G13": "LF", "G16": "CCM"}.get(pc),
+        logger=logging.getLogger("test"),
+    )
+    
+    heat_no = 240100303
+    device_no = EQUIPMENT["BOF"]["devices"][0]
+    proc_cd = EQUIPMENT["BOF"]["proc_cd"]
+    start_time = fixed_now - timedelta(minutes=35)
+    
+    op_id = db.insert_operation(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        crew_cd="A",
+        stl_grd_id=1,
+        stl_grd_cd="G-TEST",
+        proc_status=ProcessStatus.ACTIVE,
+        plan_start_time=start_time,
+        plan_end_time=start_time + timedelta(minutes=40),
+        real_start_time=start_time,
+        real_end_time=None,
+    )
+    
+    event_engine.seed_partial_events_for_active_operation(
+        operation_id=op_id,
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        window_start=start_time,
+        now=fixed_now,
+    )
+    
+    # End sequence events should NOT be present
+    event_codes = set(e["event_code"] for e in db.events if e["heat_no"] == heat_no)
+    bof_end_seq = EVENT_SEQUENCE_CONFIGS["BOF"].end_sequence
+    
+    for code in bof_end_seq:
+        assert code not in event_codes, f"End event {code} should NOT be present for active operation"

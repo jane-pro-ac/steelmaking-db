@@ -5,10 +5,13 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from .config import EQUIPMENT, PROCESS_FLOW, ProcessStatus, SimulationConfig
 from .time_utils import CST
+
+if TYPE_CHECKING:
+    from .event_engine import EventEngine
 
 
 @dataclass(frozen=True)
@@ -21,6 +24,7 @@ class OperationProcessorContext:
     get_random_transfer_gap: Any
     aligned_device: Any
     logger: Any
+    events: Optional["EventEngine"] = None
 
 
 class OperationProcessor:
@@ -54,6 +58,10 @@ class OperationProcessor:
             operation["heat_no"],
             operation["proc_cd"],
         )
+
+        # Emit end sequence events before marking as completed
+        if self.ctx.events:
+            self.ctx.events.emit_end_sequence_events(operation, completion_time)
 
         self.ctx.db.update_operation_status(
             operation_id=operation["id"],
