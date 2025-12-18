@@ -16,6 +16,12 @@ pytest = "^8.2.0"
 [tool.poetry.scripts]
 simulate = "steelmaking_simulation.main:main"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

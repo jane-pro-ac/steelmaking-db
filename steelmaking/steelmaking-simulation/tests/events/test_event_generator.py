@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from steelmaking_simulation.event_generator import (
+from steelmaking_simulation.events import (
     Event,
     EventGenerator,
     EventMessageGenerator,
@@ -15,7 +15,7 @@ from steelmaking_simulation.event_generator import (
     PROC_CD_TO_NAME,
     SpecialEventType,
 )
-from steelmaking_simulation.time_utils import CST
+from steelmaking_simulation.utils import CST
 
 
 class TestEventMessageGenerator:

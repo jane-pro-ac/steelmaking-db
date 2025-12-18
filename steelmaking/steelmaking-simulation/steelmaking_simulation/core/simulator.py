@@ -1,11 +1,11 @@
 """Steelmaking operations simulator.
 
 This module is the orchestration layer. Most business logic lives in:
-- warning_engine.py (warnings)
-- event_engine.py (events)
-- seeding.py (initialization seeding)
-- heat_planner.py (new heat creation)
-- operation_processor.py (runtime progression)
+- warnings/ (warnings engine and templates)
+- events/ (events engine and generator)
+- seeding/ (initialization seeding)
+- planning/ (new heat creation)
+- core/processor.py (runtime progression)
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import random
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from .config import (
+from ..config import (
     CREW_CODES,
     DatabaseConfig,
     EQUIPMENT,
@@ -24,14 +24,14 @@ from .config import (
     ProcessStatus,
     SimulationConfig,
 )
-from .database import DatabaseManager
-from .event_engine import EventEngine
-from .heat_planner import HeatPlanContext, HeatPlanner
-from .operation_processor import OperationProcessor, OperationProcessorContext
+from ..database import DatabaseManager
+from ..events import EventEngine
+from ..planning import HeatPlanContext, HeatPlanner
+from ..seeding import OperationSeeder, SeedContext
+from ..utils import CST
+from ..warnings import WarningEngine
+from .processor import OperationProcessor, OperationProcessorContext
 from .scheduler import DeviceScheduler
-from .seeding import OperationSeeder, SeedContext
-from .time_utils import CST
-from .warning_engine import WarningEngine
 
 logger = logging.getLogger(__name__)
 

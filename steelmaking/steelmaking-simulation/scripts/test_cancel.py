@@ -6,7 +6,7 @@ os.environ["CANCEL_EVENT_PROBABILITY"] = "0.15"
 os.environ["REWORK_EVENT_PROBABILITY"] = "0.15"
 
 from steelmaking_simulation.config import DatabaseConfig, SimulationConfig
-from steelmaking_simulation.simulator import SteelmakingSimulator
+from steelmaking_simulation.core import SteelmakingSimulator
 import psycopg2
 from psycopg2.extras import RealDictCursor
 

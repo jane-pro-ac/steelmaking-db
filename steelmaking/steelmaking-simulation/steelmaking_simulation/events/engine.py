@@ -18,19 +18,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
-from .config import (
-    PRO_LINE_CD,
-    SimulationConfig,
-    CANCEL_EVENT_PROBABILITY,
-    REWORK_EVENT_PROBABILITY,
-)
-from .event_generator import (
-    Event,
-    EventGenerator,
-    EventSequenceResult,
-    PROC_CD_TO_NAME,
-    SpecialEventType,
-)
+from ..config import PRO_LINE_CD, SimulationConfig, CANCEL_EVENT_PROBABILITY, REWORK_EVENT_PROBABILITY
+from .generator import Event, EventGenerator, EventSequenceResult, SpecialEventType
+from .codes import EVENT_CODES, PROC_CD_TO_NAME
+from .sequences import EVENT_SEQUENCE_CONFIGS
+from .messages import EventMessageGenerator
 
 
 class _ProcessNameResolver(Protocol):
@@ -232,12 +224,6 @@ class EventEngine:
         if not proc_name:
             return 0
         
-        from .event_generator import (
-            EVENT_CODES,
-            EVENT_SEQUENCE_CONFIGS,
-            EventMessageGenerator,
-        )
-        
         config = EVENT_SEQUENCE_CONFIGS.get(proc_name)
         if not config:
             return 0
@@ -407,12 +393,6 @@ class EventEngine:
         if not proc_name:
             return None
         
-        # Generate a single event based on process type
-        from .event_generator import (
-            EVENT_SEQUENCE_CONFIGS,
-            EventMessageGenerator,
-        )
-        
         config = EVENT_SEQUENCE_CONFIGS.get(proc_name)
         if not config:
             return None
@@ -446,8 +426,6 @@ class EventEngine:
                 return None
         
         # Get event info
-        from .event_generator import EVENT_CODES
-        
         event_info = None
         for code, name, p1, p2, p3, p4 in EVENT_CODES.get(proc_name, []):
             if code == event_code:
@@ -507,12 +485,6 @@ class EventEngine:
         proc_name = self.get_process_name(operation["proc_cd"])
         if not proc_name:
             return 0
-        
-        from .event_generator import (
-            EVENT_CODES,
-            EVENT_SEQUENCE_CONFIGS,
-            EventMessageGenerator,
-        )
         
         config = EVENT_SEQUENCE_CONFIGS.get(proc_name)
         if not config:

@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
-from .config import EQUIPMENT, PROCESS_FLOW, ProcessStatus, SimulationConfig
-from .time_utils import CST
+from ..config import EQUIPMENT, PROCESS_FLOW, ProcessStatus, SimulationConfig
+from ..utils import CST
 
 if TYPE_CHECKING:
-    from .event_engine import EventEngine
+    from ..events import EventEngine
 
 
 @dataclass(frozen=True)

@@ -5,9 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
-from .config import SimulationConfig, EQUIPMENT, ProcessStatus
-from .database import DatabaseManager
-from .time_utils import CST
+from ..config import SimulationConfig, EQUIPMENT, ProcessStatus
+from ..utils import CST
 
 
 @dataclass
@@ -20,7 +19,7 @@ class Slot:
 class DeviceScheduler:
     """Finds non-overlapping device slots honoring rest and duration constraints."""
 
-    def __init__(self, db: DatabaseManager, config: SimulationConfig):
+    def __init__(self, db: Any, config: SimulationConfig):
         self.db = db
         self.config = config
 

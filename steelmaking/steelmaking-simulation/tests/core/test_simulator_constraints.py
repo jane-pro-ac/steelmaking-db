@@ -1,3 +1,5 @@
+"""Tests for simulator constraints and core functionality."""
+
 import logging
 from datetime import datetime, timedelta
 
@@ -10,280 +12,11 @@ from steelmaking_simulation.config import (
     EQUIPMENT,
     PROCESS_FLOW,
 )
-from steelmaking_simulation.simulator import SteelmakingSimulator
-from steelmaking_simulation.time_utils import CST
-from steelmaking_simulation.scheduler import Slot
+from steelmaking_simulation.core import SteelmakingSimulator, Slot
+from steelmaking_simulation.events import EVENT_SEQUENCE_CONFIGS, EventEngine
+from steelmaking_simulation.utils import CST
 
-
-class FakeDatabaseManager:
-    """In-memory stand-in for DatabaseManager to test scheduling logic."""
-
-    def __init__(self):
-        self.operations = []
-        self.warnings = []
-        self.events = []
-
-    def clear_operations(self):
-        self.operations = []
-        self.warnings = []
-        self.events = []
-
-    def get_steel_grades(self):
-        return [{"id": 1, "stl_grd_cd": "G-TEST", "stl_grd_nm": "Test Grade"}]
-
-    def get_latest_heat_no_for_month(self, year: int, month: int):
-        lower_bound = int(f"{year:02d}{month:02d}00000")
-        upper_bound = int(f"{year:02d}{month:02d}99999")
-        candidates = [op["heat_no"] for op in self.operations if lower_bound <= op["heat_no"] < upper_bound]
-        return max(candidates) if candidates else 0
-
-    def insert_operation(
-        self,
-        heat_no,
-        pro_line_cd,
-        proc_cd,
-        device_no,
-        crew_cd,
-        stl_grd_id,
-        stl_grd_cd,
-        proc_status,
-        plan_start_time,
-        plan_end_time,
-        real_start_time=None,
-        real_end_time=None,
-    ):
-        op_id = len(self.operations) + 1
-        self.operations.append(
-            {
-                "id": op_id,
-                "heat_no": heat_no,
-                "pro_line_cd": pro_line_cd,
-                "proc_cd": proc_cd,
-                "device_no": device_no,
-                "crew_cd": crew_cd,
-                "stl_grd_id": stl_grd_id,
-                "stl_grd_cd": stl_grd_cd,
-                "proc_status": proc_status,
-                "plan_start_time": plan_start_time,
-                "plan_end_time": plan_end_time,
-                "real_start_time": real_start_time,
-                "real_end_time": real_end_time,
-            }
-        )
-        return op_id
-
-    def insert_warning(
-        self,
-        *,
-        heat_no,
-        pro_line_cd,
-        proc_cd,
-        device_no,
-        warning_code,
-        warning_msg,
-        warning_level,
-        warning_time_start,
-        warning_time_end,
-        extra=None,
-    ):
-        warn_id = len(self.warnings) + 1
-        self.warnings.append(
-            {
-                "id": warn_id,
-                "heat_no": heat_no,
-                "pro_line_cd": pro_line_cd,
-                "proc_cd": proc_cd,
-                "device_no": device_no,
-                "warning_code": warning_code,
-                "warning_msg": warning_msg,
-                "warning_level": warning_level,
-                "warning_time_start": warning_time_start,
-                "warning_time_end": warning_time_end,
-                "extra": extra,
-            }
-        )
-        return warn_id
-
-    def get_operation_warning_count(self, *, heat_no, proc_cd, device_no, window_start, window_end) -> int:
-        return sum(
-            1
-            for w in self.warnings
-            if w.get("heat_no") == heat_no
-            and w.get("proc_cd") == proc_cd
-            and w.get("device_no") == device_no
-            and w.get("warning_time_start") >= window_start
-            and w.get("warning_time_start") <= window_end
-        )
-
-    def get_operation_last_warning_end_time(self, *, heat_no, proc_cd, device_no, window_start, window_end):
-        ends = [
-            w.get("warning_time_end")
-            for w in self.warnings
-            if w.get("heat_no") == heat_no
-            and w.get("proc_cd") == proc_cd
-            and w.get("device_no") == device_no
-            and w.get("warning_time_start") >= window_start
-            and w.get("warning_time_start") <= window_end
-            and w.get("warning_time_end")
-        ]
-        return max(ends) if ends else None
-
-    def get_active_operations(self):
-        return sorted(
-            [op for op in self.operations if op["proc_status"] == ProcessStatus.ACTIVE],
-            key=lambda op: op["real_start_time"] or op["plan_start_time"],
-        )
-
-    def get_pending_operations(self):
-        return sorted(
-            [op for op in self.operations if op["proc_status"] == ProcessStatus.PENDING],
-            key=lambda op: op["plan_start_time"],
-        )
-
-    def get_heat_operations(self, heat_no: int):
-        return sorted(
-            [op for op in self.operations if op["heat_no"] == heat_no],
-            key=lambda op: op["plan_start_time"],
-        )
-
-    def update_operation_status(
-        self,
-        operation_id: int,
-        proc_status: int,
-        real_start_time=None,
-        real_end_time=None,
-        device_no=None,
-    ):
-        for op in self.operations:
-            if op["id"] == operation_id:
-                op["proc_status"] = proc_status
-                op["real_start_time"] = real_start_time or op["real_start_time"]
-                op["real_end_time"] = real_end_time or op["real_end_time"]
-                if device_no:
-                    op["device_no"] = device_no
-                break
-
-    def update_operation_plan_times(self, operation_id: int, plan_start_time, plan_end_time):
-        for op in self.operations:
-            if op["id"] == operation_id:
-                op["plan_start_time"] = plan_start_time
-                op["plan_end_time"] = plan_end_time
-                break
-
-    def get_device_current_operation(self, device_no: str):
-        candidates = [
-            op for op in self.operations if op["device_no"] == device_no and op["proc_status"] in (ProcessStatus.ACTIVE, ProcessStatus.PENDING)
-        ]
-        if not candidates:
-            return None
-        return sorted(candidates, key=lambda op: (op["proc_status"], op["plan_start_time"]))[0]
-
-    def get_available_device(self, proc_cd: str, devices):
-        busy = {op["device_no"] for op in self.operations if op["proc_status"] == ProcessStatus.ACTIVE}
-        for device in devices:
-            if device not in busy:
-                return device
-        return None
-
-    def get_device_operation_windows(self, device_no: str, min_window_start: datetime, exclude_operation_id=None):
-        windows = []
-        for op in self.operations:
-            if op["device_no"] != device_no:
-                continue
-            if exclude_operation_id and op["id"] == exclude_operation_id:
-                continue
-            end_time = op["real_end_time"] or op["plan_end_time"]
-            if op["proc_status"] != ProcessStatus.ACTIVE and end_time < min_window_start:
-                continue
-            windows.append(op)
-        windows.sort(key=lambda op: op["real_start_time"] or op["plan_start_time"])
-        return windows
-
-    # Event methods
-    def insert_event(
-        self,
-        *,
-        heat_no,
-        pro_line_cd,
-        proc_cd,
-        device_no,
-        event_code,
-        event_msg,
-        event_time_start,
-        event_time_end,
-        extra=None,
-    ):
-        event_id = len(self.events) + 1
-        self.events.append(
-            {
-                "id": event_id,
-                "heat_no": heat_no,
-                "pro_line_cd": pro_line_cd,
-                "proc_cd": proc_cd,
-                "device_no": device_no,
-                "event_code": event_code,
-                "event_msg": event_msg,
-                "event_time_start": event_time_start,
-                "event_time_end": event_time_end,
-                "extra": extra,
-            }
-        )
-        return event_id
-
-    def insert_events_batch(self, events):
-        count = 0
-        for e in events:
-            self.insert_event(
-                heat_no=e["heat_no"],
-                pro_line_cd=e["pro_line_cd"],
-                proc_cd=e["proc_cd"],
-                device_no=e["device_no"],
-                event_code=e.get("event_code"),
-                event_msg=e["event_msg"],
-                event_time_start=e["event_time_start"],
-                event_time_end=e["event_time_end"],
-                extra=e.get("extra"),
-            )
-            count += 1
-        return count
-
-    def get_operation_event_count(self, *, heat_no, proc_cd, device_no, window_start, window_end) -> int:
-        return sum(
-            1
-            for e in self.events
-            if e.get("heat_no") == heat_no
-            and e.get("proc_cd") == proc_cd
-            and e.get("device_no") == device_no
-            and e.get("event_time_start") >= window_start
-            and e.get("event_time_start") <= window_end
-        )
-
-    def get_operation_last_event_time(self, *, heat_no, proc_cd, device_no, window_start, window_end):
-        times = [
-            e.get("event_time_start")
-            for e in self.events
-            if e.get("heat_no") == heat_no
-            and e.get("proc_cd") == proc_cd
-            and e.get("device_no") == device_no
-            and e.get("event_time_start") >= window_start
-            and e.get("event_time_start") <= window_end
-        ]
-        return max(times) if times else None
-
-    def get_operation_events(self, *, heat_no, proc_cd, device_no, window_start, window_end):
-        return [
-            e for e in self.events
-            if e.get("heat_no") == heat_no
-            and e.get("proc_cd") == proc_cd
-            and e.get("device_no") == device_no
-            and e.get("event_time_start") >= window_start
-            and e.get("event_time_start") <= window_end
-        ]
-
-    # Compatibility stubs
-    def connect(self): ...
-    def close(self): ...
-    def cursor(self): raise RuntimeError("Not implemented for fake DB")
+from conftest import FakeDatabaseManager
 
 
 def set_fixed_now(monkeypatch, fixed_now: datetime):
@@ -293,10 +26,10 @@ def set_fixed_now(monkeypatch, fixed_now: datetime):
         def now(cls, tz=None):
             return fixed_now if tz is None else fixed_now.astimezone(tz)
 
-    import steelmaking_simulation.simulator as simulator_mod
-    import steelmaking_simulation.scheduler as scheduler_mod
-    import steelmaking_simulation.operation_processor as operation_processor_mod
-    import steelmaking_simulation.heat_planner as heat_planner_mod
+    import steelmaking_simulation.core.simulator as simulator_mod
+    import steelmaking_simulation.core.scheduler as scheduler_mod
+    import steelmaking_simulation.core.processor as operation_processor_mod
+    import steelmaking_simulation.planning.heat_planner as heat_planner_mod
 
     monkeypatch.setattr(simulator_mod, "datetime", FixedDateTime)
     monkeypatch.setattr(scheduler_mod, "datetime", FixedDateTime)
@@ -688,7 +421,6 @@ def test_runtime_does_not_mutate_planned_timestamps(simulator, fixed_now, monkey
     original = {op["id"]: (op["plan_start_time"], op["plan_end_time"]) for op in simulator.db.operations}
 
     # Advance time in steps and tick; plan times should stay stable.
-    from steelmaking_simulation.time_utils import CST
     times = [fixed_now + timedelta(minutes=15 * i) for i in range(1, 9)]
     for t in times:
         set_fixed_now(monkeypatch, datetime(t.year, t.month, t.day, t.hour, t.minute, tzinfo=CST))
@@ -751,8 +483,6 @@ def test_operation_completion_emits_end_events(fixed_now):
     the end sequence events (出钢开始, 出钢结束, 底吹开始, 底吹结束, 
     炉次结束, 处理结束, 钢包离开) are properly generated.
     """
-    from steelmaking_simulation.event_generator import EVENT_SEQUENCE_CONFIGS
-    
     db = FakeDatabaseManager()
     sim = SteelmakingSimulator(DatabaseConfig(), SimulationConfig(), db_manager=db)
     
@@ -850,8 +580,6 @@ def test_operation_completion_emits_end_events(fixed_now):
 
 def test_operation_completion_does_not_duplicate_end_events(fixed_now):
     """Test that end events are not duplicated if they already exist."""
-    from steelmaking_simulation.event_generator import EVENT_SEQUENCE_CONFIGS
-    
     db = FakeDatabaseManager()
     sim = SteelmakingSimulator(DatabaseConfig(), SimulationConfig(), db_manager=db)
     
@@ -915,8 +643,6 @@ def test_operation_completion_does_not_duplicate_end_events(fixed_now):
 
 def test_emit_end_sequence_for_lf_operation(fixed_now):
     """Test end sequence generation for LF process."""
-    from steelmaking_simulation.event_generator import EVENT_SEQUENCE_CONFIGS
-    
     db = FakeDatabaseManager()
     sim = SteelmakingSimulator(DatabaseConfig(), SimulationConfig(), db_manager=db)
     
@@ -967,8 +693,6 @@ def test_emit_end_sequence_for_lf_operation(fixed_now):
 
 def test_emit_end_sequence_for_ccm_operation(fixed_now):
     """Test end sequence generation for CCM process."""
-    from steelmaking_simulation.event_generator import EVENT_SEQUENCE_CONFIGS
-    
     db = FakeDatabaseManager()
     sim = SteelmakingSimulator(DatabaseConfig(), SimulationConfig(), db_manager=db)
     
@@ -1024,9 +748,6 @@ def test_active_operations_have_partial_events_after_initialization(fixed_now):
     events (start sequence + some middle events) since they have been running
     for some time.
     """
-    from steelmaking_simulation.event_generator import EVENT_SEQUENCE_CONFIGS
-    from steelmaking_simulation.event_engine import EventEngine, EventEngineConfig
-    
     db = FakeDatabaseManager()
     config = SimulationConfig()
     
@@ -1088,9 +809,6 @@ def test_active_operations_have_partial_events_after_initialization(fixed_now):
 
 def test_active_operations_have_start_events_at_minimum(fixed_now):
     """Test that even if operation just started, it should have start sequence events."""
-    from steelmaking_simulation.event_generator import EVENT_SEQUENCE_CONFIGS
-    from steelmaking_simulation.event_engine import EventEngine, EventEngineConfig
-    
     db = FakeDatabaseManager()
     config = SimulationConfig()
     
@@ -1143,9 +861,6 @@ def test_active_operations_have_start_events_at_minimum(fixed_now):
 
 def test_long_running_active_operation_has_middle_events(fixed_now):
     """Test that an operation running for a long time has middle events too."""
-    from steelmaking_simulation.event_generator import EVENT_SEQUENCE_CONFIGS
-    from steelmaking_simulation.event_engine import EventEngine, EventEngineConfig
-    
     db = FakeDatabaseManager()
     config = SimulationConfig()
     
@@ -1197,9 +912,6 @@ def test_long_running_active_operation_has_middle_events(fixed_now):
 
 def test_partial_events_do_not_include_end_sequence(fixed_now):
     """Test that partial events for active operations do NOT include end sequence."""
-    from steelmaking_simulation.event_generator import EVENT_SEQUENCE_CONFIGS
-    from steelmaking_simulation.event_engine import EventEngine, EventEngineConfig
-    
     db = FakeDatabaseManager()
     config = SimulationConfig()
     

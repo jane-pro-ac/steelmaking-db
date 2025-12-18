@@ -2,20 +2,67 @@
 
 - **Purpose**: Continuously simulate steelmaking operations for demo/testing environments. It seeds and drives data in `steelmaking.steelmaking_operation`, `steelmaking.steelmaking_warning`, and `steelmaking.steelmaking_event` tables to mimic BOF → LF → CCM flows with realistic timing, crew assignments, and event sequences.
 
-- **Project layout**:
-  - `steelmaking_simulation/config.py`: Environment-configurable settings, equipment lists, process flow, and `CREW_CODES`.
-  - `steelmaking_simulation/database.py`: Thin Postgres access layer; handles inserts/updates/queries plus demo truncation of operation/warning/event tables.
-  - `steelmaking_simulation/simulator.py`: Orchestration layer wiring seeding, warnings, events, runtime processing, and heat creation.
-  - `steelmaking_simulation/seeding.py`: Initialization seeding of operations + historical warnings + historical events (enforces all timing constraints).
-  - `steelmaking_simulation/warning_engine.py`: Warning generation (historical seeding + real-time tick emissions + throttling).
-  - `steelmaking_simulation/event_engine.py`: Event generation (historical seeding + real-time tick emissions). Wraps `event_generator.py`.
-  - `steelmaking_simulation/event_generator.py`: Core event sequence generation logic with process-specific constraints, event codes, and Chinese message templates.
-  - `steelmaking_simulation/operation_processor.py`: Runtime progression (complete active ops, start pending ops when ready, **does not mutate** `plan_start_time/plan_end_time`).
-  - `steelmaking_simulation/heat_planner.py`: New heat creation (BOF starts now; LF/CCM planned within transfer window; aligned routing bias).
-  - `steelmaking_simulation/scheduler.py`: Slot finder enforcing non-overlap and rest bounds (upper rest bound is planning-only; runtime enforces minimum rest only).
-  - `steelmaking_simulation/time_utils.py`: Shared time constants (e.g., CST).
-  - `steelmaking_simulation/main.py`: CLI entrypoint; wires config/logging and starts the simulator.
-  - Root docs: `README.md` (how to run) and `example_steelmaking_operation.md` (schema example).
+- **Project layout** (Engineering-grade modular structure):
+  
+  The project follows a modular package structure with clear separation of concerns.
+
+  **Config Package** (`steelmaking_simulation/config/`):
+  - `settings.py`: Environment-configurable settings (`DatabaseConfig`, `SimulationConfig`)
+  - `constants.py`: Process status enum, PRO_LINE_CD, CREW_CODES
+  - `equipment.py`: Equipment definitions and process flow configuration
+  - `__init__.py`: Package exports
+
+  **Database Package** (`steelmaking_simulation/database/`):
+  - `manager.py`: `DatabaseManager` class with connection management
+  - `operations.py`: Operations-related database queries
+  - `warnings.py`: Warning-related database queries
+  - `events.py`: Event-related database queries
+  - `__init__.py`: Package exports
+
+  **Utils Package** (`steelmaking_simulation/utils/`):
+  - `time_utils.py`: Shared time constants (CST timezone)
+  - `__init__.py`: Package exports
+
+  **Events Package** (`steelmaking_simulation/events/`):
+  - `codes.py`: Event code definitions (`EVENT_CODES`, `PROC_CD_TO_NAME`)
+  - `sequences.py`: Event sequence configurations (`EventSequenceConfig`, `EVENT_SEQUENCE_CONFIGS`)
+  - `messages.py`: Chinese message template generator (`EventMessageGenerator`)
+  - `generator.py`: Core event generation logic (`Event`, `EventGenerator`, `EventSequenceResult`, `SpecialEventType`)
+  - `engine.py`: Event engine for historical seeding and real-time tick (`EventEngine`, `EventEngineConfig`)
+  - `__init__.py`: Package exports
+
+  **Warnings Package** (`steelmaking_simulation/warnings/`):
+  - `templates.py`: Warning templates and payload dataclass (`WARNING_TEMPLATES`, `WarningPayload`)
+  - `engine.py`: Warning engine for historical seeding and real-time tick (`WarningEngine`)
+  - `__init__.py`: Package exports
+
+  **Core Package** (`steelmaking_simulation/core/`):
+  - `simulator.py`: Main orchestration layer (`SteelmakingSimulator`)
+  - `scheduler.py`: Device slot finder (`DeviceScheduler`, `Slot`)
+  - `processor.py`: Runtime operation progression (`OperationProcessor`, `OperationProcessorContext`)
+  - `__init__.py`: Package exports
+
+  **Seeding Package** (`steelmaking_simulation/seeding/`):
+  - `seeder.py`: Initialization seeding logic (`OperationSeeder`, `SeedContext`)
+  - `__init__.py`: Package exports
+
+  **Planning Package** (`steelmaking_simulation/planning/`):
+  - `heat_planner.py`: New heat creation logic (`HeatPlanner`, `HeatPlanContext`)
+  - `__init__.py`: Package exports
+
+  **Root Package** (`steelmaking_simulation/`):
+  - `main.py`: CLI entrypoint; wires config/logging and starts the simulator
+  - `__init__.py`: Package-level exports (re-exports all symbols from subpackages for convenience)
+
+  **Tests** (`tests/`):
+  - `conftest.py`: Shared test fixtures and `FakeDatabaseManager` for in-memory testing
+  - `core/test_simulator_constraints.py`: Comprehensive constraint coverage tests (20 tests)
+  - `events/test_event_generator.py`: Event sequence validation and message generation tests (44 tests)
+
+  **Root Docs**: 
+  - `README.md` (how to run)
+  - `AGENTS.md` (this file - agent guide)
+  - `pyproject.toml` (Poetry configuration)
 
 - **Setup & run**:
   - Requirements: Python 3.10+, Poetry, reachable Postgres.
@@ -94,17 +141,39 @@
     - Event messages are in Chinese and include realistic parameters (e.g., 温度值, 物料名称, 重量).
 
 - **Development tips**:
-  - Keep schema alignment tight; update `database.py`, `simulator.py`, and docs whenever table columns change.
-  - Prefer adding new configuration flags to `.env`-driven dataclasses in `config.py`.
+  - Keep schema alignment tight; update `database/` package and docs whenever table columns change.
+  - Prefer adding new configuration flags to `.env`-driven dataclasses in `config/settings.py`.
   - Logging is configured in `main.py`; adjust there for verbosity.
   - Avoid destructive DB commands beyond the intentional truncate in `DatabaseManager.clear_operations()`.
   - If you add warning generation, reuse `DatabaseManager.cursor()` for transactional safety and ensure both `warning_time_start` and `warning_time_end` are written.
-  - If you add new event codes or modify constraints, update `event_generator.py` (EVENT_CODES, EVENT_SEQUENCE_CONFIGS) and add corresponding tests.
-  - Unit checks: see `tests/test_simulator_constraints.py` for constraint coverage (no-overlap, device rest bounds, transfer gaps 20–30, active semantics, aligned routing preference, heat number generation behavior, real-time warning ordering/max, warning duration distribution, **end event generation on operation completion**, **partial event seeding for active operations**).
-  - Event tests: see `tests/test_event_generator.py` for event sequence validation, message generation, and constraint compliance.
+  - If you add new event codes or modify constraints, update `events/codes.py` (EVENT_CODES), `events/sequences.py` (EVENT_SEQUENCE_CONFIGS) and add corresponding tests.
+  - Unit checks: see `tests/core/test_simulator_constraints.py` for constraint coverage (no-overlap, device rest bounds, transfer gaps 20–30, active semantics, aligned routing preference, heat number generation behavior, real-time warning ordering/max, warning duration distribution, **end event generation on operation completion**, **partial event seeding for active operations**).
+  - Event tests: see `tests/events/test_event_generator.py` for event sequence validation, message generation, and constraint compliance.
+  - **Module organization**: When adding new functionality, place it in the appropriate package:
+    - Configuration: `config/`
+    - Database operations: `database/`
+    - Event-related: `events/`
+    - Warning-related: `warnings/`
+    - Core simulation logic: `core/`
+    - Seeding logic: `seeding/`
+    - Planning logic: `planning/`
+  - **Import patterns**: Use modular imports:
+    ```python
+    # Recommended imports
+    from steelmaking_simulation.config import DatabaseConfig, SimulationConfig
+    from steelmaking_simulation.core import SteelmakingSimulator, DeviceScheduler, Slot
+    from steelmaking_simulation.events import EventGenerator, EVENT_CODES
+    from steelmaking_simulation.warnings import WarningEngine
+    from steelmaking_simulation.utils import CST
+    
+    # Or import directly from submodules for specific items
+    from steelmaking_simulation.config.settings import DatabaseConfig
+    from steelmaking_simulation.core.simulator import SteelmakingSimulator
+    ```
 
 - **Maintenance checks**:
-  - Sanity-test connection with `psql`/`poetry run python -c "from steelmaking_simulation import DatabaseConfig, DatabaseManager; DatabaseManager(DatabaseConfig()).connect()"`.
-  - When changing process flow or equipment, update `PROCESS_FLOW`, `EQUIPMENT`, and any downstream logic that assumes BOF → LF → CCM order.
+  - Sanity-test connection with `psql`/`poetry run python -c "from steelmaking_simulation.database import DatabaseManager; from steelmaking_simulation.config import DatabaseConfig; DatabaseManager(DatabaseConfig()).connect()"`.
+  - When changing process flow or equipment, update `config/equipment.py` (`PROCESS_FLOW`, `EQUIPMENT`), and any downstream logic that assumes BOF → LF → CCM order.
   - Validate generated timestamps stay within configured duration/gap bounds and honor sequential process rules before shipping changes.
   - When updating event constraints, refer to `steelmaking/event_code_constraints.md` for the authoritative sequence rules.
+  - Run tests with `poetry run pytest tests/ -v` to ensure all 64 tests pass before committing changes.

@@ -4,7 +4,7 @@ import logging
 import sys
 
 from .config import DatabaseConfig, SimulationConfig
-from .simulator import SteelmakingSimulator
+from .core import SteelmakingSimulator
 
 
 def setup_logging():
