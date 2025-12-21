@@ -16,6 +16,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from collections import Counter
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
 from ..config import PRO_LINE_CD, SimulationConfig, CANCEL_EVENT_PROBABILITY, REWORK_EVENT_PROBABILITY
@@ -89,6 +90,72 @@ class EventEngine:
             cancel_probability=self.event_config.cancel_event_probability,
             rework_probability=self.event_config.rework_event_probability,
         )
+
+    @staticmethod
+    def _pending_paired_end_codes(existing_events: List[Dict[str, Any]], config) -> List[str]:
+        counts = Counter(e["event_code"] for e in existing_events)
+        pending: List[str] = []
+        for start_code, end_code in config.paired_events:
+            missing = counts.get(start_code, 0) - counts.get(end_code, 0)
+            if missing > 0:
+                pending.extend([end_code] * missing)
+        return pending
+
+    @staticmethod
+    def _paired_end_time(start_time: datetime, now: datetime) -> datetime:
+        end_time = min(now, start_time + timedelta(seconds=1))
+        if end_time < start_time:
+            end_time = start_time
+        return end_time
+
+    def _append_missing_paired_end_events(
+        self,
+        *,
+        events_to_insert: List[Dict[str, Any]],
+        config,
+        event_lookup: Dict[str, Any],
+        heat_no: int,
+        pro_line_cd: str,
+        proc_cd: str,
+        device_no: str,
+        operation_id: Optional[int],
+        now: datetime,
+    ) -> None:
+        start_events: Dict[str, List[Dict[str, Any]]] = {}
+        counts = Counter()
+        pair_start_to_end = dict(config.paired_events)
+
+        for event in events_to_insert:
+            code = event["event_code"]
+            counts[code] += 1
+            if code in pair_start_to_end:
+                start_events.setdefault(code, []).append(event)
+
+        for start_code, end_code in config.paired_events:
+            starts = start_events.get(start_code, [])
+            missing = len(starts) - counts.get(end_code, 0)
+            if missing <= 0:
+                continue
+            event_info = event_lookup.get(end_code)
+            if not event_info:
+                continue
+            code, name, p1, p2, p3, p4 = event_info
+            for start_event in starts[-missing:]:
+                start_time = start_event["event_time_start"]
+                end_time = self._paired_end_time(start_time, now)
+                msg = EventMessageGenerator.generate_message(code, name, p1, p2, p3, p4)
+                events_to_insert.append({
+                    "heat_no": heat_no,
+                    "pro_line_cd": pro_line_cd,
+                    "proc_cd": proc_cd,
+                    "device_no": device_no,
+                    "event_code": end_code,
+                    "event_name": name,
+                    "event_msg": msg,
+                    "event_time_start": end_time,
+                    "event_time_end": end_time,
+                    "extra": {"operation_id": operation_id} if operation_id else None,
+                })
     
     def seed_historical_events_for_completed_operation(
         self,
@@ -152,6 +219,7 @@ class EventEngine:
                 "proc_cd": e.proc_cd,
                 "device_no": e.device_no,
                 "event_code": e.event_code,
+                "event_name": e.event_name,
                 "event_msg": e.event_msg,
                 "event_time_start": e.event_time_start,
                 "event_time_end": e.event_time_end,
@@ -267,6 +335,7 @@ class EventEngine:
                 "proc_cd": proc_cd,
                 "device_no": device_no,
                 "event_code": event_code,
+                "event_name": name,
                 "event_msg": msg,
                 "event_time_start": event_time,
                 "event_time_end": event_time,
@@ -320,12 +389,26 @@ class EventEngine:
                         "proc_cd": proc_cd,
                         "device_no": device_no,
                         "event_code": event_code,
+                        "event_name": name,
                         "event_msg": msg,
                         "event_time_start": event_time,
                         "event_time_end": event_time,
                         "extra": {"operation_id": operation_id} if operation_id else None,
                     })
-        
+
+        if events_to_insert:
+            self._append_missing_paired_end_events(
+                events_to_insert=events_to_insert,
+                config=config,
+                event_lookup=event_lookup,
+                heat_no=heat_no,
+                pro_line_cd=pro_line_cd,
+                proc_cd=proc_cd,
+                device_no=device_no,
+                operation_id=operation_id,
+                now=now,
+            )
+
         if not events_to_insert:
             return 0
         
@@ -357,13 +440,14 @@ class EventEngine:
         # For active operations, window_end might be None
         effective_end = window_end or (now + timedelta(hours=1))
         
-        count = self.db.get_operation_event_count(
+        existing_events = self.db.get_operation_events(
             heat_no=operation["heat_no"],
             proc_cd=operation["proc_cd"],
             device_no=operation["device_no"],
             window_start=window_start,
             window_end=effective_end,
         )
+        count = len(existing_events)
         if count >= max_events:
             return False
         
@@ -403,19 +487,23 @@ class EventEngine:
             return None
         
         effective_end = now + timedelta(hours=1)
-        count = self.db.get_operation_event_count(
+        existing_events = self.db.get_operation_events(
             heat_no=operation["heat_no"],
             proc_cd=operation["proc_cd"],
             device_no=operation["device_no"],
             window_start=window_start,
             window_end=effective_end,
         )
+        count = len(existing_events)
         
         # Early in operation: emit start events
         # Middle: emit middle events
         # This is simplified for real-time - full sequence tracking would be complex
         
-        if count < len(config.start_sequence):
+        pending_paired_end_codes = self._pending_paired_end_codes(existing_events, config)
+        if pending_paired_end_codes:
+            event_code = pending_paired_end_codes[0]
+        elif count < len(config.start_sequence):
             # Emit start sequence event
             event_code = config.start_sequence[count]
         else:
@@ -444,6 +532,7 @@ class EventEngine:
             proc_cd=operation["proc_cd"],
             device_no=operation["device_no"],
             event_code=event_code,
+            event_name=name,
             event_msg=msg,
             event_time_start=now,
             event_time_end=now,
@@ -507,13 +596,16 @@ class EventEngine:
         # Determine which end sequence events are missing
         end_sequence = config.end_sequence
         missing_end_events = [code for code in end_sequence if code not in existing_codes]
+        pending_paired_end_codes = self._pending_paired_end_codes(existing_events, config)
         
-        if not missing_end_events:
+        if not missing_end_events and not pending_paired_end_codes:
             self.logger.debug(
                 "All end events already present for heat %s proc %s",
                 operation["heat_no"], operation["proc_cd"]
             )
             return 0
+
+        events_to_insert = pending_paired_end_codes + missing_end_events
         
         # Calculate time spacing for end events
         # End events should occur in the last 10% of the operation duration
@@ -524,7 +616,7 @@ class EventEngine:
         
         # Space end events between last_event_time and completion_time
         time_available = (completion_time - last_event_time).total_seconds()
-        num_events = len(missing_end_events)
+        num_events = len(events_to_insert)
         
         if time_available <= 0:
             # Not enough time, place all events at completion_time with small offsets
@@ -539,7 +631,7 @@ class EventEngine:
         
         # Insert end events
         events_inserted = 0
-        for i, event_code in enumerate(missing_end_events):
+        for i, event_code in enumerate(events_to_insert):
             event_info = event_lookup.get(event_code)
             if not event_info:
                 continue
@@ -558,6 +650,7 @@ class EventEngine:
                 proc_cd=operation["proc_cd"],
                 device_no=operation["device_no"],
                 event_code=event_code,
+                event_name=name,
                 event_msg=msg,
                 event_time_start=event_time,
                 event_time_end=event_time,

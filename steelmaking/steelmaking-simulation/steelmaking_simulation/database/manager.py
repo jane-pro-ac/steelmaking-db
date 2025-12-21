@@ -166,12 +166,12 @@ class DatabaseManager:
     # --- Event Methods (delegated to EventQueries) ---
 
     def insert_event(self, *, heat_no, pro_line_cd, proc_cd, device_no,
-                    event_code, event_msg, event_time_start, event_time_end, extra=None) -> int:
+                    event_code, event_name, event_msg, event_time_start, event_time_end, extra=None) -> int:
         """Insert a steelmaking event."""
         from .events import EventQueries
         return EventQueries.insert_event(
             self, heat_no=heat_no, pro_line_cd=pro_line_cd, proc_cd=proc_cd,
-            device_no=device_no, event_code=event_code, event_msg=event_msg,
+            device_no=device_no, event_code=event_code, event_name=event_name, event_msg=event_msg,
             event_time_start=event_time_start, event_time_end=event_time_end, extra=extra
         )
 

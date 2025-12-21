@@ -515,6 +515,7 @@ def test_operation_completion_emits_end_events(fixed_now):
         proc_cd=proc_cd,
         device_no=device_no,
         event_code="G12001",  # 钢包到达
+        event_name="钢包到达",
         event_msg="钢包到达",
         event_time_start=start_time,
         event_time_end=start_time,
@@ -525,6 +526,7 @@ def test_operation_completion_emits_end_events(fixed_now):
         proc_cd=proc_cd,
         device_no=device_no,
         event_code="G12003",  # 处理开始
+        event_name="处理开始",
         event_msg="处理开始",
         event_time_start=start_time + timedelta(seconds=30),
         event_time_end=start_time + timedelta(seconds=30),
@@ -535,6 +537,7 @@ def test_operation_completion_emits_end_events(fixed_now):
         proc_cd=proc_cd,
         device_no=device_no,
         event_code="G12005",  # 炉次开始
+        event_name="炉次开始",
         event_msg="炉次开始",
         event_time_start=start_time + timedelta(seconds=60),
         event_time_end=start_time + timedelta(seconds=60),
@@ -546,6 +549,7 @@ def test_operation_completion_emits_end_events(fixed_now):
         proc_cd=proc_cd,
         device_no=device_no,
         event_code="G12008",  # 加料
+        event_name="加料",
         event_msg="加料",
         event_time_start=start_time + timedelta(minutes=10),
         event_time_end=start_time + timedelta(minutes=10),
@@ -612,6 +616,7 @@ def test_operation_completion_does_not_duplicate_end_events(fixed_now):
             proc_cd=proc_cd,
             device_no=device_no,
             event_code=code,
+            event_name=f"Event {code}",
             event_msg=f"Event {code}",
             event_time_start=start_time + timedelta(seconds=i*30),
             event_time_end=start_time + timedelta(seconds=i*30),
@@ -625,6 +630,7 @@ def test_operation_completion_does_not_duplicate_end_events(fixed_now):
             proc_cd=proc_cd,
             device_no=device_no,
             event_code=code,
+            event_name=f"Event {code}",
             event_msg=f"Event {code}",
             event_time_start=fixed_now - timedelta(minutes=5) + timedelta(seconds=i*30),
             event_time_end=fixed_now - timedelta(minutes=5) + timedelta(seconds=i*30),
@@ -675,6 +681,7 @@ def test_emit_end_sequence_for_lf_operation(fixed_now):
             proc_cd=proc_cd,
             device_no=device_no,
             event_code=code,
+            event_name=f"Event {code}",
             event_msg=f"Event {code}",
             event_time_start=start_time + timedelta(seconds=i*30),
             event_time_end=start_time + timedelta(seconds=i*30),
@@ -725,6 +732,7 @@ def test_emit_end_sequence_for_ccm_operation(fixed_now):
             proc_cd=proc_cd,
             device_no=device_no,
             event_code=code,
+            event_name=f"Event {code}",
             event_msg=f"Event {code}",
             event_time_start=start_time + timedelta(seconds=i*30),
             event_time_end=start_time + timedelta(seconds=i*30),
@@ -958,3 +966,165 @@ def test_partial_events_do_not_include_end_sequence(fixed_now):
     
     for code in bof_end_seq:
         assert code not in event_codes, f"End event {code} should NOT be present for active operation"
+
+
+def test_partial_events_include_paired_ends_for_lf(fixed_now, monkeypatch):
+    """Test that paired LF events are emitted together for active operations."""
+    db = FakeDatabaseManager()
+    config = SimulationConfig()
+
+    event_engine = EventEngine(
+        db=db,
+        config=config,
+        get_process_name=lambda pc: {"G12": "BOF", "G13": "LF", "G16": "CCM"}.get(pc),
+        logger=logging.getLogger("test"),
+    )
+
+    lf_config = EVENT_SEQUENCE_CONFIGS["LF"]
+    monkeypatch.setattr(lf_config, "middle_events", [("G13024", 1.0)])
+    monkeypatch.setattr(lf_config, "paired_events", [("G13024", "G13025")])
+
+    heat_no = 240100304
+    device_no = EQUIPMENT["LF"]["devices"][0]
+    proc_cd = EQUIPMENT["LF"]["proc_cd"]
+    start_time = fixed_now - timedelta(minutes=30)
+
+    op_id = db.insert_operation(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        crew_cd="A",
+        stl_grd_id=1,
+        stl_grd_cd="G-TEST",
+        proc_status=ProcessStatus.ACTIVE,
+        plan_start_time=start_time,
+        plan_end_time=start_time + timedelta(minutes=40),
+        real_start_time=start_time,
+        real_end_time=None,
+    )
+
+    event_engine.seed_partial_events_for_active_operation(
+        operation_id=op_id,
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        window_start=start_time,
+        now=fixed_now,
+    )
+
+    event_codes = [e["event_code"] for e in db.events if e["heat_no"] == heat_no]
+    assert "G13024" in event_codes, "Expected paired start event G13024"
+    assert event_codes.count("G13025") >= event_codes.count("G13024"), \
+        "Paired end event G13025 should be present for each G13024"
+
+
+def test_emit_end_sequence_closes_paired_events(fixed_now):
+    """Test that completion inserts missing paired end events."""
+    db = FakeDatabaseManager()
+    config = SimulationConfig()
+
+    event_engine = EventEngine(
+        db=db,
+        config=config,
+        get_process_name=lambda pc: {"G12": "BOF", "G13": "LF", "G16": "CCM"}.get(pc),
+        logger=logging.getLogger("test"),
+    )
+
+    heat_no = 240100305
+    device_no = EQUIPMENT["LF"]["devices"][0]
+    proc_cd = EQUIPMENT["LF"]["proc_cd"]
+    start_time = fixed_now - timedelta(minutes=30)
+
+    op_id = db.insert_operation(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        crew_cd="A",
+        stl_grd_id=1,
+        stl_grd_cd="G-TEST",
+        proc_status=ProcessStatus.ACTIVE,
+        plan_start_time=start_time,
+        plan_end_time=start_time + timedelta(minutes=40),
+        real_start_time=start_time,
+        real_end_time=None,
+    )
+
+    start_event_time = start_time + timedelta(minutes=5)
+    db.insert_event(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        event_code="G13024",
+        event_name="吹氩开始",
+        event_msg="执行吹氩开始操作",
+        event_time_start=start_event_time,
+        event_time_end=start_event_time,
+        extra={"operation_id": op_id},
+    )
+
+    operation = db.operations[0]
+    event_engine.emit_end_sequence_events(operation, fixed_now)
+
+    paired_end_events = [
+        e for e in db.events
+        if e["heat_no"] == heat_no and e["event_code"] == "G13025"
+    ]
+    assert paired_end_events, "Expected paired end event G13025 to be inserted"
+    assert paired_end_events[0]["event_time_start"] >= start_event_time
+
+
+def test_emit_realtime_event_prefers_paired_end(fixed_now):
+    """Test that realtime emission closes pending paired events first."""
+    db = FakeDatabaseManager()
+    config = SimulationConfig()
+
+    event_engine = EventEngine(
+        db=db,
+        config=config,
+        get_process_name=lambda pc: {"G12": "BOF", "G13": "LF", "G16": "CCM"}.get(pc),
+        logger=logging.getLogger("test"),
+    )
+
+    heat_no = 240100306
+    device_no = EQUIPMENT["LF"]["devices"][0]
+    proc_cd = EQUIPMENT["LF"]["proc_cd"]
+    start_time = fixed_now - timedelta(minutes=15)
+
+    op_id = db.insert_operation(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        crew_cd="A",
+        stl_grd_id=1,
+        stl_grd_cd="G-TEST",
+        proc_status=ProcessStatus.ACTIVE,
+        plan_start_time=start_time,
+        plan_end_time=start_time + timedelta(minutes=40),
+        real_start_time=start_time,
+        real_end_time=None,
+    )
+
+    start_event_time = start_time + timedelta(minutes=2)
+    db.insert_event(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        event_code="G13024",
+        event_name="吹氩开始",
+        event_msg="执行吹氩开始操作",
+        event_time_start=start_event_time,
+        event_time_end=start_event_time,
+        extra={"operation_id": op_id},
+    )
+
+    operation = db.operations[0]
+    event_engine.emit_realtime_event(operation, fixed_now)
+
+    last_event = db.events[-1]
+    assert last_event["event_code"] == "G13025", "Realtime emission should close paired events first"

@@ -82,7 +82,7 @@
   - `steelmaking.steelmaking_operation` columns used: `heat_no`, `pro_line_cd`, `proc_cd`, `device_no`, `crew_cd`, `stl_grd_id`, `stl_grd_cd`, `proc_status`, `plan_start_time`, `plan_end_time`, `real_start_time`, `real_end_time`, `extra`. `crew_cd` must be one of `CREW_CODES` (A/B/C/D); `stl_grd_id` references `base.steel_grade.id`.
     - `proc_status` values: 0=COMPLETED, 1=ACTIVE, 2=PENDING, 3=CANCELED (DB constraint allows 0-3).
   - `steelmaking.steelmaking_warning` is populated during seeding and ticks (truncated on startup together with operations). Schema columns now exclude `operation_id`; only `heat_no`, `pro_line_cd`, `proc_cd`, `device_no`, `warning_code`, `warning_msg`, `warning_level`, `warning_time_start`, `warning_time_end`, `extra` are written. `extra` carries contextual metadata (`operation_id`, `crew_cd`) for traceability. Warning messages are generated in中文.
-  - `steelmaking.steelmaking_event` is populated during seeding and ticks (truncated on startup together with operations/warnings). Columns: `heat_no`, `pro_line_cd`, `proc_cd`, `device_no`, `event_code`, `event_msg`, `event_time_start`, `event_time_end`, `extra`. Event messages are generated in中文 with realistic parameters.
+  - `steelmaking.steelmaking_event` is populated during seeding and ticks (truncated on startup together with operations/warnings). Columns: `heat_no`, `pro_line_cd`, `proc_cd`, `device_no`, `event_code`, `event_name`, `event_msg`, `event_time_start`, `event_time_end`, `extra`. Event messages are generated in中文 with realistic parameters.
   - Heat number format: `YYMMNNNNN` where the last 5 digits auto-increment per month.
 
 - **Simulation behavior**:

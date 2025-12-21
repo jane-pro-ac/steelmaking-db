@@ -17,7 +17,8 @@ class EventQueries:
         pro_line_cd: str,
         proc_cd: str,
         device_no: str,
-        event_code: Optional[str],
+        event_code: str,
+        event_name: str,
         event_msg: str,
         event_time_start: datetime,
         event_time_end: datetime,
@@ -29,9 +30,9 @@ class EventQueries:
                 """
                 INSERT INTO steelmaking.steelmaking_event (
                     heat_no, pro_line_cd, proc_cd, device_no,
-                    event_code, event_msg, event_time_start, event_time_end, extra
+                    event_code, event_name, event_msg, event_time_start, event_time_end, extra
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -40,6 +41,7 @@ class EventQueries:
                     proc_cd,
                     device_no,
                     event_code,
+                    event_name,
                     event_msg,
                     event_time_start,
                     event_time_end,
@@ -59,7 +61,7 @@ class EventQueries:
         Args:
             events: List of event dictionaries with keys:
                 heat_no, pro_line_cd, proc_cd, device_no,
-                event_code, event_msg, event_time_start, event_time_end, extra
+                event_code, event_name, event_msg, event_time_start, event_time_end, extra
                 
         Returns:
             Number of events inserted
@@ -75,7 +77,8 @@ class EventQueries:
                     e["pro_line_cd"],
                     e["proc_cd"],
                     e["device_no"],
-                    e.get("event_code"),
+                    e["event_code"],
+                    e["event_name"],
                     e["event_msg"],
                     e["event_time_start"],
                     e["event_time_end"],
@@ -87,7 +90,7 @@ class EventQueries:
                 """
                 INSERT INTO steelmaking.steelmaking_event (
                     heat_no, pro_line_cd, proc_cd, device_no,
-                    event_code, event_msg, event_time_start, event_time_end, extra
+                    event_code, event_name, event_msg, event_time_start, event_time_end, extra
                 )
                 VALUES %s
                 """,
@@ -163,7 +166,7 @@ class EventQueries:
         with db.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, event_code, event_msg, event_time_start, event_time_end
+                SELECT id, event_code, event_name, event_msg, event_time_start, event_time_end
                 FROM steelmaking.steelmaking_event
                 WHERE heat_no = %s
                   AND proc_cd = %s

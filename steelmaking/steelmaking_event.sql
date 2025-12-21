@@ -6,7 +6,8 @@ CREATE TABLE steelmaking.steelmaking_event (
     proc_cd       TEXT NOT NULL,
     device_no     TEXT NOT NULL,
 
-    event_code  TEXT,
+    event_code  TEXT NOT NULL,
+    event_name  TEXT NOT NULL,
     event_msg   TEXT NOT NULL,
     event_time_start  TIMESTAMPTZ NOT NULL,
     event_time_end       TIMESTAMPTZ NOT NULL,
