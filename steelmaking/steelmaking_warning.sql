@@ -13,7 +13,10 @@ CREATE TABLE steelmaking.steelmaking_warning (
     warning_time_start  TIMESTAMPTZ NOT NULL,
     warning_time_end       TIMESTAMPTZ NOT NULL,
 
-    extra         JSONB
+    extra         JSONB,
+
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_stlmk_warn_heat_device

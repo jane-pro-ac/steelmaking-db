@@ -1,0 +1,1 @@
+"""KPI stats test package."""

@@ -38,6 +38,7 @@ from .database import (
     OperationQueries,
     WarningQueries,
     EventQueries,
+    KpiStatsQueries,
 )
 from .utils import CST
 from .events import (
@@ -57,6 +58,12 @@ from .warnings import (
     WarningEngine,
     WARNING_TEMPLATES,
     WarningPayload,
+)
+from .kpi_stats import (
+    KpiStatsEngine,
+    KpiStatsEngineConfig,
+    KpiValueGenerator,
+    KpiStat,
 )
 from .core import (
     SteelmakingSimulator,
@@ -91,6 +98,7 @@ __all__ = [
     "OperationQueries",
     "WarningQueries",
     "EventQueries",
+    "KpiStatsQueries",
     # Utils
     "CST",
     # Events
@@ -109,6 +117,11 @@ __all__ = [
     "WarningEngine",
     "WARNING_TEMPLATES",
     "WarningPayload",
+    # KPI Stats
+    "KpiStatsEngine",
+    "KpiStatsEngineConfig",
+    "KpiValueGenerator",
+    "KpiStat",
     # Core
     "SteelmakingSimulator",
     "DeviceScheduler",

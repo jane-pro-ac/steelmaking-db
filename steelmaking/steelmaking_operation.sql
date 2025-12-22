@@ -23,6 +23,9 @@ CREATE TABLE steelmaking.steelmaking_operation (
 
     extra            JSONB,
 
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+
     CONSTRAINT uq_heat_device UNIQUE (heat_no, device_no)
 );
 

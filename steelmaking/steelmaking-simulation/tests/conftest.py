@@ -24,11 +24,14 @@ class FakeDatabaseManager:
         self.operations: List[Dict[str, Any]] = []
         self.warnings: List[Dict[str, Any]] = []
         self.events: List[Dict[str, Any]] = []
+        self.kpi_stats: List[Dict[str, Any]] = []
+        self.kpi_definitions: Dict[str, List[Dict[str, Any]]] = {}
 
     def clear_operations(self):
         self.operations = []
         self.warnings = []
         self.events = []
+        self.kpi_stats = []
 
     def get_steel_grades(self) -> List[Dict[str, Any]]:
         return [{"id": 1, "stl_grd_cd": "G-TEST", "stl_grd_nm": "Test Grade"}]
@@ -293,6 +296,92 @@ class FakeDatabaseManager:
     def get_operations_by_heat_no(self, heat_no: int) -> List[Dict[str, Any]]:
         """Return all operations for a given heat number."""
         return [op for op in self.operations if op["heat_no"] == heat_no]
+
+    # --- KPI Stats Methods ---
+
+    def set_kpi_definitions(self, proc_cd: str, definitions: List[Dict[str, Any]]) -> None:
+        """Set KPI definitions for testing."""
+        self.kpi_definitions[proc_cd] = definitions
+
+    def get_kpi_definitions_by_proc_cd(self, proc_cd: str) -> List[Dict[str, Any]]:
+        """Fetch KPI definitions for a process code."""
+        return self.kpi_definitions.get(proc_cd, [])
+
+    def get_all_kpi_definitions(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Fetch all KPI definitions grouped by process code."""
+        return self.kpi_definitions.copy()
+
+    def insert_kpi_stat(
+        self,
+        *,
+        heat_no: int,
+        pro_line_cd: str,
+        proc_cd: str,
+        device_no: str,
+        kpi_code: str,
+        stat_value,
+        sample_time,
+        extra: Optional[Dict] = None,
+    ) -> int:
+        stat_id = len(self.kpi_stats) + 1
+        self.kpi_stats.append({
+            "id": stat_id,
+            "heat_no": heat_no,
+            "pro_line_cd": pro_line_cd,
+            "proc_cd": proc_cd,
+            "device_no": device_no,
+            "kpi_code": kpi_code,
+            "stat_value": stat_value,
+            "sample_time": sample_time,
+            "extra": extra,
+        })
+        return stat_id
+
+    def insert_kpi_stats_batch(self, stats: List[Dict[str, Any]]) -> int:
+        count = 0
+        for s in stats:
+            self.insert_kpi_stat(
+                heat_no=s["heat_no"],
+                pro_line_cd=s["pro_line_cd"],
+                proc_cd=s["proc_cd"],
+                device_no=s["device_no"],
+                kpi_code=s["kpi_code"],
+                stat_value=s.get("stat_value"),
+                sample_time=s["sample_time"],
+                extra=s.get("extra"),
+            )
+            count += 1
+        return count
+
+    def get_operation_kpi_stats_count(
+        self, *, heat_no, proc_cd, device_no, window_start, window_end
+    ) -> int:
+        return sum(
+            1
+            for s in self.kpi_stats
+            if s.get("heat_no") == heat_no
+            and s.get("proc_cd") == proc_cd
+            and s.get("device_no") == device_no
+            and s.get("sample_time") >= window_start
+            and s.get("sample_time") <= window_end
+        )
+
+    def get_operation_last_kpi_sample_time(
+        self, *, heat_no, proc_cd, device_no, window_start, window_end
+    ):
+        times = [
+            s.get("sample_time")
+            for s in self.kpi_stats
+            if s.get("heat_no") == heat_no
+            and s.get("proc_cd") == proc_cd
+            and s.get("device_no") == device_no
+            and s.get("sample_time") >= window_start
+            and s.get("sample_time") <= window_end
+        ]
+        return max(times) if times else None
+
+    def clear_kpi_stats(self) -> None:
+        self.kpi_stats = []
 
     # Compatibility stubs
     def connect(self): ...

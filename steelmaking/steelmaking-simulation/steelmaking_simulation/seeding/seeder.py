@@ -1,15 +1,18 @@
-"""Initialization seeding logic for operations, historical warnings, and events."""
+"""Initialization seeding logic for operations, historical warnings, events, and KPI stats."""
 
 from __future__ import annotations
 
 import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from ..config import EQUIPMENT, PROCESS_FLOW, PRO_LINE_CD, ProcessStatus, SimulationConfig
 from ..warnings import WarningEngine
 from ..events import EventEngine
+
+if TYPE_CHECKING:
+    from ..kpi_stats import KpiStatsEngine
 
 
 @dataclass(frozen=True)
@@ -23,6 +26,7 @@ class SeedContext:
     get_random_crew: any
     get_random_duration: any
     logger: any
+    kpi_stats: Optional["KpiStatsEngine"] = None
 
 
 class OperationSeeder:
@@ -191,6 +195,18 @@ class OperationSeeder:
                                     "marking subsequent operations as canceled",
                                     heat_no, stage_idx, proc_cd
                                 )
+                            
+                            # Seed historical KPI stats for completed operations
+                            if self.ctx.kpi_stats:
+                                self.ctx.kpi_stats.seed_historical_kpi_stats_for_completed_operation(
+                                    operation_id=operation_id,
+                                    heat_no=heat_no,
+                                    pro_line_cd=PRO_LINE_CD,
+                                    proc_cd=proc_cd,
+                                    device_no=device_no,
+                                    window_start=plan_start,
+                                    window_end=plan_end,
+                                )
                         
                         # For active operations, seed partial events (start + some middle events)
                         elif proc_status == ProcessStatus.ACTIVE:
@@ -203,6 +219,18 @@ class OperationSeeder:
                                 window_start=real_start,
                                 now=now,
                             )
+                            
+                            # Seed partial KPI stats for active operations
+                            if self.ctx.kpi_stats:
+                                self.ctx.kpi_stats.seed_partial_kpi_stats_for_active_operation(
+                                    operation_id=operation_id,
+                                    heat_no=heat_no,
+                                    pro_line_cd=PRO_LINE_CD,
+                                    proc_cd=proc_cd,
+                                    device_no=device_no,
+                                    window_start=real_start,
+                                    now=now,
+                                )
 
                     last_end_bof = bof_end
                     last_end_lf = lf_end

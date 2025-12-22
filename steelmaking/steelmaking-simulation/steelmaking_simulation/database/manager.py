@@ -52,11 +52,12 @@ class DatabaseManager:
             return cur.fetchall()
 
     def clear_operations(self):
-        """Remove all operations, warnings, and events (demo reset)."""
+        """Remove all operations, warnings, events, and KPI stats (demo reset)."""
         with self.cursor() as cur:
             cur.execute("""
                 TRUNCATE steelmaking.steelmaking_event,
                          steelmaking.steelmaking_warning,
+                         steelmaking.steelmaking_kpi_stats,
                          steelmaking.steelmaking_operation
                 RESTART IDENTITY CASCADE
             """)
@@ -206,3 +207,53 @@ class DatabaseManager:
             self, heat_no=heat_no, proc_cd=proc_cd, device_no=device_no,
             window_start=window_start, window_end=window_end
         )
+
+    # --- KPI Stats Methods (delegated to KpiStatsQueries) ---
+
+    def get_kpi_definitions_by_proc_cd(self, proc_cd: str) -> List[Dict[str, Any]]:
+        """Fetch all KPI definitions for a given process code."""
+        from .kpi_stats import KpiStatsQueries
+        return KpiStatsQueries.get_kpi_definitions_by_proc_cd(self, proc_cd)
+
+    def get_all_kpi_definitions(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Fetch all KPI definitions grouped by process code."""
+        from .kpi_stats import KpiStatsQueries
+        return KpiStatsQueries.get_all_kpi_definitions(self)
+
+    def insert_kpi_stat(self, *, heat_no, pro_line_cd, proc_cd, device_no,
+                       kpi_code, stat_value, sample_time, extra=None) -> int:
+        """Insert a single KPI statistic record."""
+        from .kpi_stats import KpiStatsQueries
+        return KpiStatsQueries.insert_kpi_stat(
+            self, heat_no=heat_no, pro_line_cd=pro_line_cd, proc_cd=proc_cd,
+            device_no=device_no, kpi_code=kpi_code, stat_value=stat_value,
+            sample_time=sample_time, extra=extra
+        )
+
+    def insert_kpi_stats_batch(self, stats: List[Dict[str, Any]]) -> int:
+        """Insert multiple KPI statistics records in a batch."""
+        from .kpi_stats import KpiStatsQueries
+        return KpiStatsQueries.insert_kpi_stats_batch(self, stats)
+
+    def get_operation_kpi_stats_count(self, *, heat_no, proc_cd, device_no,
+                                     window_start, window_end) -> int:
+        """Count KPI stats for an operation within a time window."""
+        from .kpi_stats import KpiStatsQueries
+        return KpiStatsQueries.get_operation_kpi_stats_count(
+            self, heat_no=heat_no, proc_cd=proc_cd, device_no=device_no,
+            window_start=window_start, window_end=window_end
+        )
+
+    def get_operation_last_kpi_sample_time(self, *, heat_no, proc_cd, device_no,
+                                          window_start, window_end):
+        """Get the latest sample_time for KPI stats in an operation window."""
+        from .kpi_stats import KpiStatsQueries
+        return KpiStatsQueries.get_operation_last_kpi_sample_time(
+            self, heat_no=heat_no, proc_cd=proc_cd, device_no=device_no,
+            window_start=window_start, window_end=window_end
+        )
+
+    def clear_kpi_stats(self) -> None:
+        """Clear all KPI statistics (for demo reset)."""
+        from .kpi_stats import KpiStatsQueries
+        return KpiStatsQueries.clear_kpi_stats(self)

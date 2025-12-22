@@ -12,7 +12,10 @@ CREATE TABLE steelmaking.steelmaking_event (
     event_time_start  TIMESTAMPTZ NOT NULL,
     event_time_end       TIMESTAMPTZ NOT NULL,
 
-    extra         JSONB
+    extra         JSONB,
+
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_stlmk_event_heat_device

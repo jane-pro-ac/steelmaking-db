@@ -26,6 +26,7 @@ from ..config import (
 )
 from ..database import DatabaseManager
 from ..events import EventEngine
+from ..kpi_stats import KpiStatsEngine
 from ..planning import HeatPlanContext, HeatPlanner
 from ..seeding import OperationSeeder, SeedContext
 from ..utils import CST
@@ -47,12 +48,14 @@ class SteelmakingSimulator:
 
         self.warnings = WarningEngine(db=self.db, config=self.config, get_process_name=self._get_process_name, logger=logger)
         self.events = EventEngine(db=self.db, config=self.config, get_process_name=self._get_process_name, logger=logger)
+        self.kpi_stats = KpiStatsEngine(db=self.db, config=self.config, get_process_name=self._get_process_name, logger=logger)
         self.seeder = OperationSeeder(
             SeedContext(
                 db=self.db,
                 config=self.config,
                 warnings=self.warnings,
                 events=self.events,
+                kpi_stats=self.kpi_stats,
                 generate_heat_no=self.generate_heat_no,
                 get_random_steel_grade=self.get_random_steel_grade,
                 get_random_crew=self.get_random_crew,
@@ -94,6 +97,9 @@ class SteelmakingSimulator:
         if not self.steel_grades:
             raise RuntimeError("No steel grades found in database. Please populate the base.steel_grade table first.")
         logger.info("Loaded %s steel grades", len(self.steel_grades))
+
+        # Load KPI definitions into cache
+        self.kpi_stats.load_kpi_definitions()
 
         now = datetime.now(CST)
         self.seeder.reset_demo_data(now)
@@ -138,6 +144,7 @@ class SteelmakingSimulator:
         now = datetime.now(CST)
         self._tick_realtime_warnings(now)
         self._tick_realtime_events(now)
+        self._tick_realtime_kpi_stats(now)
 
         self.process_active_operations()
         self.process_pending_operations()
@@ -169,6 +176,9 @@ class SteelmakingSimulator:
 
     def _tick_realtime_events(self, now: datetime) -> None:
         self.events.tick_realtime_events(now)
+
+    def _tick_realtime_kpi_stats(self, now: datetime) -> None:
+        self.kpi_stats.tick_realtime_kpi_stats(now)
 
     # --- Internal helpers ---
 

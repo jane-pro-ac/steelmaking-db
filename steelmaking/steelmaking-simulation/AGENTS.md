@@ -1,6 +1,6 @@
 # Steelmaking Simulation – Agent Guide
 
-- **Purpose**: Continuously simulate steelmaking operations for demo/testing environments. It seeds and drives data in `steelmaking.steelmaking_operation`, `steelmaking.steelmaking_warning`, and `steelmaking.steelmaking_event` tables to mimic BOF → LF → CCM flows with realistic timing, crew assignments, and event sequences.
+- **Purpose**: Continuously simulate steelmaking operations for demo/testing environments. It seeds and drives data in `steelmaking.steelmaking_operation`, `steelmaking.steelmaking_warning`, `steelmaking.steelmaking_event`, and `steelmaking.steelmaking_kpi_stats` tables to mimic BOF → LF → CCM flows with realistic timing, crew assignments, event sequences, and KPI statistics.
 
 - **Project layout** (Engineering-grade modular structure):
   
@@ -17,6 +17,7 @@
   - `operations.py`: Operations-related database queries
   - `warnings.py`: Warning-related database queries
   - `events.py`: Event-related database queries
+  - `kpi_stats.py`: KPI statistics database queries (`KpiStatsQueries`)
   - `__init__.py`: Package exports
 
   **Utils Package** (`steelmaking_simulation/utils/`):
@@ -34,6 +35,11 @@
   **Warnings Package** (`steelmaking_simulation/warnings/`):
   - `templates.py`: Warning templates and payload dataclass (`WARNING_TEMPLATES`, `WarningPayload`)
   - `engine.py`: Warning engine for historical seeding and real-time tick (`WarningEngine`)
+  - `__init__.py`: Package exports
+
+  **KPI Stats Package** (`steelmaking_simulation/kpi_stats/`):
+  - `generator.py`: KPI value generation logic (`KpiValueGenerator`, `KpiStat`)
+  - `engine.py`: KPI stats engine for historical seeding and real-time tick (`KpiStatsEngine`, `KpiStatsEngineConfig`)
   - `__init__.py`: Package exports
 
   **Core Package** (`steelmaking_simulation/core/`):
@@ -56,13 +62,22 @@
 
   **Tests** (`tests/`):
   - `conftest.py`: Shared test fixtures and `FakeDatabaseManager` for in-memory testing
-  - `core/test_simulator_constraints.py`: Comprehensive constraint coverage tests (20 tests)
+  - `core/test_simulator_constraints.py`: Comprehensive constraint coverage tests (24 tests)
   - `events/test_event_generator.py`: Event sequence validation and message generation tests (44 tests)
+  - `kpi_stats/test_kpi_generator.py`: KPI value generation tests (16 tests)
+  - `kpi_stats/test_kpi_engine.py`: KPI stats engine tests (16 tests)
 
   **Root Docs**: 
   - `README.md` (how to run)
   - `AGENTS.md` (this file - agent guide)
   - `pyproject.toml` (Poetry configuration)
+
+  **Related Files** (in parent `steelmaking/` directory):
+  - `kpi_code.json`: KPI code definitions JSON file containing process-specific KPI metadata (BOF, LF, RH, CCM). Includes `kpi_code`, `name_cn`, `name_en`, `unit`, `desc_cn`, and `level` for each KPI. Used as source data for seeding `steelmaking.steelmaking_kpi_def` table.
+  - `seed_steelmaking_kpi_def.sql`: SQL script to seed KPI definitions into the database.
+  - `steelmaking_kpi_def.sql`: Table schema for KPI definitions.
+  - `steelmaking_kpi_stats.sql`: Table schema for KPI statistics.
+  - `event_code_constraints.md`: Authoritative event sequence constraints documentation.
 
 - **Setup & run**:
   - Requirements: Python 3.10+, Poetry, reachable Postgres.
@@ -76,6 +91,7 @@
     - Routing preference: `ALIGNED_ROUTE_PROBABILITY` (default 0.9) biases BOF#i → LF#i → CCM#i (rare cross-routing still allowed)
     - Warnings: `MAX_WARNINGS_PER_OPERATION` (default 5), `WARNING_PROBABILITY_PER_TICK` (default 0.1)
     - Seed warnings: `SEED_WARNING_PROBABILITY_PER_COMPLETED_OPERATION` (default 0.25) controls how often completed operations get historical warnings during initialization.
+    - KPI stats: `SEED_KPI_STATS_PROBABILITY` (default 0.95), `MIN_KPI_SAMPLES_PER_OPERATION` (default 5), `MAX_KPI_SAMPLES_PER_OPERATION` (default 15), `KPI_PROBABILITY_PER_TICK` (default 0.4), `MIN_KPI_SAMPLE_INTERVAL_SECONDS` (default 30), `MAX_REALTIME_KPI_SAMPLES_PER_OPERATION` (default 50), `KPI_OUT_OF_RANGE_PROBABILITY` (default 0.05), `KPI_OUT_OF_RANGE_FACTOR` (default 0.15).
     - Demo seeding: `DEMO_SEED_*` knobs primarily shape the seeded time horizon/density around "now".
 
 - **Data model expectations**:
@@ -83,6 +99,7 @@
     - `proc_status` values: 0=COMPLETED, 1=ACTIVE, 2=PENDING, 3=CANCELED (DB constraint allows 0-3).
   - `steelmaking.steelmaking_warning` is populated during seeding and ticks (truncated on startup together with operations). Schema columns now exclude `operation_id`; only `heat_no`, `pro_line_cd`, `proc_cd`, `device_no`, `warning_code`, `warning_msg`, `warning_level`, `warning_time_start`, `warning_time_end`, `extra` are written. `extra` carries contextual metadata (`operation_id`, `crew_cd`) for traceability. Warning messages are generated in中文.
   - `steelmaking.steelmaking_event` is populated during seeding and ticks (truncated on startup together with operations/warnings). Columns: `heat_no`, `pro_line_cd`, `proc_cd`, `device_no`, `event_code`, `event_name`, `event_msg`, `event_time_start`, `event_time_end`, `extra`. Event messages are generated in中文 with realistic parameters.
+  - `steelmaking.steelmaking_kpi_stats` is populated during seeding and ticks (truncated on startup). Columns: `heat_no`, `pro_line_cd`, `proc_cd`, `device_no`, `kpi_code`, `stat_value`, `sample_time`, `extra`. KPI definitions are read from `steelmaking.steelmaking_kpi_def` table which contains `proc_cd`, `kpi_code`, `kpi_name`, `unit`, `int_digits`, `decimal_digits`, `upper_limit`, `lower_limit`, etc.
   - Heat number format: `YYMMNNNNN` where the last 5 digits auto-increment per month.
 
 - **Simulation behavior**:
@@ -139,6 +156,19 @@
     - Real-time events: **ACTIVE** operations may emit events during ticks (max 15 per operation), with 30s minimum spacing.
     - **End sequence events on completion**: When an active operation completes at runtime, the `EventEngine.emit_end_sequence_events()` method backfills any missing required events (start/middle/follow-up/paired/end). This ensures operations always have complete event coverage regardless of how many real-time events were emitted during the operation.
     - Event messages are in Chinese and include realistic parameters (e.g., 温度值, 物料名称, 重量).
+  - KPI Statistics:
+    - KPI definitions are loaded from `steelmaking.steelmaking_kpi_def` table at startup and cached.
+    - Each process (BOF/G12, LF/G13, RH/G15, CCM/G16) has its own set of KPI definitions.
+    - **Historical KPI stats**: **COMPLETED** operations get historical KPI stats seeded with 95% probability (`SEED_KPI_STATS_PROBABILITY`). Each operation gets 5-15 sample points distributed across its duration.
+    - **Partial KPI stats for ACTIVE operations**: During initialization, **ACTIVE** operations get partial KPI stats seeded via `KpiStatsEngine.seed_partial_kpi_stats_for_active_operation()`, proportional to elapsed time.
+    - **Real-time KPI stats**: **ACTIVE** operations emit KPI stats during ticks with 40% probability (`KPI_PROBABILITY_PER_TICK`), respecting minimum 30s spacing (`MIN_KPI_SAMPLE_INTERVAL_SECONDS`) and max 50 samples per operation (`MAX_REALTIME_KPI_SAMPLES_PER_OPERATION`).
+    - **Value generation**: Values are generated based on KPI definitions (upper_limit, lower_limit, int_digits, decimal_digits). Different KPI types have specialized generators:
+      - Temperature KPIs: Gradual changes, operating range centered
+      - Rate/flow KPIs: Variable, sometimes near zero
+      - Cumulative KPIs: Increase with operation progress
+      - Deviation KPIs: Centered around 0
+      - Chemical composition KPIs: Target range with progress-based drift
+    - **Out-of-range values**: 5% probability (`KPI_OUT_OF_RANGE_PROBABILITY`) of generating values exceeding limits by up to 15% (`KPI_OUT_OF_RANGE_FACTOR`) to simulate real-world anomalies.
 
 - **Development tips**:
   - Keep schema alignment tight; update `database/` package and docs whenever table columns change.
@@ -154,6 +184,7 @@
     - Database operations: `database/`
     - Event-related: `events/`
     - Warning-related: `warnings/`
+    - KPI stats-related: `kpi_stats/`
     - Core simulation logic: `core/`
     - Seeding logic: `seeding/`
     - Planning logic: `planning/`
@@ -164,11 +195,13 @@
     from steelmaking_simulation.core import SteelmakingSimulator, DeviceScheduler, Slot
     from steelmaking_simulation.events import EventGenerator, EVENT_CODES
     from steelmaking_simulation.warnings import WarningEngine
+    from steelmaking_simulation.kpi_stats import KpiStatsEngine, KpiValueGenerator
     from steelmaking_simulation.utils import CST
     
     # Or import directly from submodules for specific items
     from steelmaking_simulation.config.settings import DatabaseConfig
     from steelmaking_simulation.core.simulator import SteelmakingSimulator
+    from steelmaking_simulation.kpi_stats.engine import KpiStatsEngine
     ```
 
 - **Maintenance checks**:
@@ -176,4 +209,5 @@
   - When changing process flow or equipment, update `config/equipment.py` (`PROCESS_FLOW`, `EQUIPMENT`), and any downstream logic that assumes BOF → LF → CCM order.
   - Validate generated timestamps stay within configured duration/gap bounds and honor sequential process rules before shipping changes.
   - When updating event constraints, refer to `steelmaking/event_code_constraints.md` for the authoritative sequence rules.
-  - Run tests with `poetry run pytest tests/ -v` to ensure all 64 tests pass before committing changes.
+  - KPI stats tests: see `tests/kpi_stats/test_kpi_generator.py` for value generation tests and `tests/kpi_stats/test_kpi_engine.py` for engine tests.
+  - Run tests with `poetry run pytest tests/ -v` to ensure all 100 tests pass before committing changes.
