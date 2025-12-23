@@ -134,10 +134,10 @@
       - **LF (G13)**: G13001-G13025 (钢包到达, 加料, 喂丝, 通电, 吹氩, etc.)
       - **RH (G15)**: G15001-G15025 (钢包到达, 抽真空, 达到高真空, 破空, etc.)
       - **CCM (G16)**: G16001-G16022 (炉次到受包位, 炉次开浇, 中包测温, 铸坯产生, etc.)
-    - Historical events: **COMPLETED** operations get 8-20 events seeded with 95% probability.
+    - Historical events: **COMPLETED** operations are always seeded and any missing required events are backfilled (start/middle/follow-up/paired/end).
     - **Partial events for ACTIVE operations**: During initialization, **ACTIVE** operations (which have been running for some time) get partial events seeded via `EventEngine.seed_partial_events_for_active_operation()`. This generates the start sequence events plus some middle events proportional to how long the operation has been running. This ensures ACTIVE operations realistically have some events already generated.
     - Real-time events: **ACTIVE** operations may emit events during ticks (max 15 per operation), with 30s minimum spacing.
-    - **End sequence events on completion**: When an active operation completes at runtime, the `EventEngine.emit_end_sequence_events()` method is called to emit any missing end sequence events (e.g., 炉次结束, 处理结束, 钢包离开 for BOF). This ensures operations always have proper ending events regardless of how many real-time events were emitted during the operation.
+    - **End sequence events on completion**: When an active operation completes at runtime, the `EventEngine.emit_end_sequence_events()` method backfills any missing required events (start/middle/follow-up/paired/end). This ensures operations always have complete event coverage regardless of how many real-time events were emitted during the operation.
     - Event messages are in Chinese and include realistic parameters (e.g., 温度值, 物料名称, 重量).
 
 - **Development tips**:

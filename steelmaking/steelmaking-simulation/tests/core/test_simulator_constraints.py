@@ -13,7 +13,7 @@ from steelmaking_simulation.config import (
     PROCESS_FLOW,
 )
 from steelmaking_simulation.core import SteelmakingSimulator, Slot
-from steelmaking_simulation.events import EVENT_SEQUENCE_CONFIGS, EventEngine
+from steelmaking_simulation.events import EVENT_SEQUENCE_CONFIGS, EventEngine, EventEngineConfig
 from steelmaking_simulation.utils import CST
 
 from conftest import FakeDatabaseManager
@@ -642,9 +642,13 @@ def test_operation_completion_does_not_duplicate_end_events(fixed_now):
     operation = db.operations[0]
     sim.processor._complete_operation(operation, fixed_now)
     
-    # Verify no duplicate events were added
+    # Verify no duplicate end sequence events were added
     final_event_count = len(db.events)
-    assert final_event_count == initial_event_count, "No new events should be added if all end events exist"
+    assert final_event_count > initial_event_count, "Missing events should be backfilled on completion"
+
+    event_codes = [e["event_code"] for e in db.events if e["heat_no"] == heat_no]
+    for code in EVENT_SEQUENCE_CONFIGS["BOF"].end_sequence:
+        assert event_codes.count(code) == 1, f"End event {code} should not be duplicated"
 
 
 def test_emit_end_sequence_for_lf_operation(fixed_now):
@@ -1128,3 +1132,96 @@ def test_emit_realtime_event_prefers_paired_end(fixed_now):
 
     last_event = db.events[-1]
     assert last_event["event_code"] == "G13025", "Realtime emission should close paired events first"
+
+
+def test_completed_operation_seeding_includes_all_events(fixed_now):
+    """Test that historical seeding backfills all required events."""
+    db = FakeDatabaseManager()
+    config = SimulationConfig()
+
+    event_engine = EventEngine(
+        db=db,
+        config=config,
+        event_config=EventEngineConfig(
+            seed_event_probability_per_completed_operation=1.0,
+            cancel_event_probability=0.0,
+            rework_event_probability=0.0,
+        ),
+        get_process_name=lambda pc: {"G13": "LF"}.get(pc),
+        logger=logging.getLogger("test"),
+    )
+
+    heat_no = 240100307
+    device_no = "G130"
+    proc_cd = "G13"
+    start_time = fixed_now - timedelta(minutes=50)
+    end_time = fixed_now - timedelta(minutes=10)
+
+    op_id = db.insert_operation(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        crew_cd="A",
+        stl_grd_id=1,
+        stl_grd_cd="G-TEST",
+        proc_status=ProcessStatus.COMPLETED,
+        plan_start_time=start_time,
+        plan_end_time=end_time,
+        real_start_time=start_time,
+        real_end_time=end_time,
+    )
+
+    event_engine.seed_historical_events_for_completed_operation(
+        operation_id=op_id,
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        window_start=start_time,
+        window_end=end_time,
+    )
+
+    event_codes = {e["event_code"] for e in db.events if e["heat_no"] == heat_no}
+    required_codes = set(EventEngine._build_required_event_sequence(EVENT_SEQUENCE_CONFIGS["LF"]))
+    assert required_codes.issubset(event_codes)
+
+
+def test_runtime_completion_backfills_all_events(fixed_now):
+    """Test that runtime completion fills missing required events."""
+    db = FakeDatabaseManager()
+    config = SimulationConfig()
+
+    event_engine = EventEngine(
+        db=db,
+        config=config,
+        get_process_name=lambda pc: {"G13": "LF"}.get(pc),
+        logger=logging.getLogger("test"),
+    )
+
+    heat_no = 240100308
+    device_no = "G130"
+    proc_cd = "G13"
+    start_time = fixed_now - timedelta(minutes=40)
+
+    db.insert_operation(
+        heat_no=heat_no,
+        pro_line_cd="G1",
+        proc_cd=proc_cd,
+        device_no=device_no,
+        crew_cd="A",
+        stl_grd_id=1,
+        stl_grd_cd="G-TEST",
+        proc_status=ProcessStatus.ACTIVE,
+        plan_start_time=start_time,
+        plan_end_time=fixed_now + timedelta(minutes=5),
+        real_start_time=start_time,
+        real_end_time=None,
+    )
+
+    operation = db.operations[0]
+    event_engine.emit_end_sequence_events(operation, fixed_now)
+
+    event_codes = {e["event_code"] for e in db.events if e["heat_no"] == heat_no}
+    required_codes = set(EventEngine._build_required_event_sequence(EVENT_SEQUENCE_CONFIGS["LF"]))
+    assert required_codes.issubset(event_codes)

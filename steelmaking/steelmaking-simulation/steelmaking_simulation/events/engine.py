@@ -50,7 +50,7 @@ class EventEngineConfig:
     max_events_per_operation: int = 20
     
     # Probability of seeding events for a completed operation
-    seed_event_probability_per_completed_operation: float = 0.95
+    seed_event_probability_per_completed_operation: float = 1.0
     
     # Max events that can be generated during real-time for active operations
     max_realtime_events_per_operation: int = 15
@@ -156,6 +156,273 @@ class EventEngine:
                     "event_time_end": end_time,
                     "extra": {"operation_id": operation_id} if operation_id else None,
                 })
+
+    @staticmethod
+    def _event_lookup_for_process(proc_name: str) -> Dict[str, Any]:
+        return {
+            code: (code, name, p1, p2, p3, p4)
+            for code, name, p1, p2, p3, p4 in EVENT_CODES.get(proc_name, [])
+        }
+
+    @staticmethod
+    def _build_required_event_sequence(config) -> List[str]:
+        sequence: List[str] = []
+        seen = set()
+
+        def add_code(code: str) -> None:
+            if code and code not in seen:
+                sequence.append(code)
+                seen.add(code)
+
+        def add_followups(start_code: str) -> None:
+            follow = config.follow_up_events.get(start_code)
+            while follow:
+                add_code(follow)
+                follow = config.follow_up_events.get(follow)
+
+        for code in config.start_sequence:
+            add_code(code)
+
+        pair_start_to_end = dict(config.paired_events)
+
+        for code, _weight in config.middle_events:
+            add_code(code)
+            add_followups(code)
+            end_code = pair_start_to_end.get(code)
+            if end_code:
+                add_code(end_code)
+
+        for start_code in config.follow_up_events:
+            if start_code in seen:
+                continue
+            add_code(start_code)
+            add_followups(start_code)
+
+        for start_code, end_code in config.paired_events:
+            if start_code not in seen:
+                add_code(start_code)
+            if end_code not in seen:
+                add_code(end_code)
+
+        for code in config.end_sequence:
+            add_code(code)
+
+        return sequence
+
+    @staticmethod
+    def _build_event_times_for_sequence(
+        sequence: List[str],
+        window_start: datetime,
+        window_end: datetime,
+        config,
+    ) -> Dict[str, datetime]:
+        times: Dict[str, datetime] = {}
+        total_seconds = (window_end - window_start).total_seconds()
+        if total_seconds <= 0 or not sequence:
+            return times
+
+        start_len = len(config.start_sequence)
+        end_len = len(config.end_sequence)
+        middle_len = max(0, len(sequence) - start_len - end_len)
+
+        start_duration = total_seconds * 0.10
+        end_duration = total_seconds * 0.10
+        middle_duration = max(0.0, total_seconds - start_duration - end_duration)
+
+        last_time = window_start
+        total_len = len(sequence)
+
+        for i, code in enumerate(sequence):
+            if i < start_len:
+                denom = max(start_len - 1, 1)
+                offset = start_duration * (i / denom)
+                event_time = window_start + timedelta(seconds=offset)
+            elif i >= total_len - end_len:
+                end_idx = i - (total_len - end_len)
+                denom = max(end_len - 1, 1)
+                offset = start_duration + middle_duration + end_duration * (end_idx / denom)
+                event_time = window_start + timedelta(seconds=offset)
+            else:
+                middle_idx = i - start_len
+                denom = max(middle_len + 1, 1)
+                offset = start_duration + middle_duration * ((middle_idx + 1) / denom)
+                event_time = window_start + timedelta(seconds=offset)
+
+            if event_time < last_time:
+                event_time = min(window_end, last_time + timedelta(seconds=1))
+            if event_time > window_end:
+                event_time = window_end
+
+            times[code] = event_time
+            last_time = event_time
+
+        return times
+
+    def _build_missing_required_events(
+        self,
+        *,
+        existing_events: List[Dict[str, Any]],
+        config,
+        event_lookup: Dict[str, Any],
+        heat_no: int,
+        pro_line_cd: str,
+        proc_cd: str,
+        device_no: str,
+        operation_id: Optional[int],
+        window_start: datetime,
+        window_end: datetime,
+    ) -> List[Dict[str, Any]]:
+        sequence = self._build_required_event_sequence(config)
+        event_times = self._build_event_times_for_sequence(sequence, window_start, window_end, config)
+        existing_codes = {e["event_code"] for e in existing_events}
+        paired_end_codes = {end_code for _start_code, end_code in config.paired_events}
+        follow_up_codes: set[str] = set()
+        for start_code in config.follow_up_events:
+            follow = config.follow_up_events.get(start_code)
+            while follow:
+                follow_up_codes.add(follow)
+                follow = config.follow_up_events.get(follow)
+
+        events_to_insert: List[Dict[str, Any]] = []
+        for code in sequence:
+            if code in existing_codes:
+                continue
+            if code in paired_end_codes:
+                continue
+            if code in follow_up_codes:
+                continue
+            event_info = event_lookup.get(code)
+            if not event_info:
+                continue
+            _code, name, p1, p2, p3, p4 = event_info
+            event_time = event_times.get(code, window_end)
+            msg = EventMessageGenerator.generate_message(code, name, p1, p2, p3, p4)
+            events_to_insert.append({
+                "heat_no": heat_no,
+                "pro_line_cd": pro_line_cd,
+                "proc_cd": proc_cd,
+                "device_no": device_no,
+                "event_code": code,
+                "event_name": name,
+                "event_msg": msg,
+                "event_time_start": event_time,
+                "event_time_end": event_time,
+                "extra": {"operation_id": operation_id} if operation_id else None,
+            })
+
+        return events_to_insert
+
+    def _append_missing_paired_end_events_for_existing(
+        self,
+        *,
+        existing_events: List[Dict[str, Any]],
+        events_to_insert: List[Dict[str, Any]],
+        config,
+        event_lookup: Dict[str, Any],
+        heat_no: int,
+        pro_line_cd: str,
+        proc_cd: str,
+        device_no: str,
+        operation_id: Optional[int],
+        now: datetime,
+    ) -> None:
+        combined_events = list(existing_events) + list(events_to_insert)
+        counts = Counter(e["event_code"] for e in combined_events)
+        pair_start_to_end = dict(config.paired_events)
+
+        start_events: Dict[str, List[Dict[str, Any]]] = {}
+        for event in combined_events:
+            code = event["event_code"]
+            if code in pair_start_to_end:
+                start_events.setdefault(code, []).append(event)
+
+        for start_code, end_code in config.paired_events:
+            starts = sorted(start_events.get(start_code, []), key=lambda e: e["event_time_start"])
+            missing = len(starts) - counts.get(end_code, 0)
+            if missing <= 0:
+                continue
+            event_info = event_lookup.get(end_code)
+            if not event_info:
+                continue
+            _code, name, p1, p2, p3, p4 = event_info
+            for start_event in starts[-missing:]:
+                start_time = start_event["event_time_start"]
+                end_time = self._paired_end_time(start_time, now)
+                msg = EventMessageGenerator.generate_message(end_code, name, p1, p2, p3, p4)
+                events_to_insert.append({
+                    "heat_no": heat_no,
+                    "pro_line_cd": pro_line_cd,
+                    "proc_cd": proc_cd,
+                    "device_no": device_no,
+                    "event_code": end_code,
+                    "event_name": name,
+                    "event_msg": msg,
+                    "event_time_start": end_time,
+                    "event_time_end": end_time,
+                    "extra": {"operation_id": operation_id} if operation_id else None,
+                })
+
+    def _append_missing_followup_events_for_existing(
+        self,
+        *,
+        existing_events: List[Dict[str, Any]],
+        events_to_insert: List[Dict[str, Any]],
+        config,
+        event_lookup: Dict[str, Any],
+        heat_no: int,
+        pro_line_cd: str,
+        proc_cd: str,
+        device_no: str,
+        operation_id: Optional[int],
+        now: datetime,
+    ) -> None:
+        if not config.follow_up_events:
+            return
+
+        max_loops = len(config.follow_up_events) + 1
+        loops = 0
+        added = True
+
+        while added and loops < max_loops:
+            loops += 1
+            added = False
+            combined_events = list(existing_events) + list(events_to_insert)
+            counts = Counter(e["event_code"] for e in combined_events)
+            events_by_code: Dict[str, List[Dict[str, Any]]] = {}
+            for event in combined_events:
+                events_by_code.setdefault(event["event_code"], []).append(event)
+
+            for start_code, follow_code in config.follow_up_events.items():
+                starts = sorted(
+                    events_by_code.get(start_code, []),
+                    key=lambda e: e["event_time_start"],
+                )
+                if not starts:
+                    continue
+                missing = len(starts) - counts.get(follow_code, 0)
+                if missing <= 0:
+                    continue
+                event_info = event_lookup.get(follow_code)
+                if not event_info:
+                    continue
+                _code, name, p1, p2, p3, p4 = event_info
+                for start_event in starts[-missing:]:
+                    start_time = start_event["event_time_start"]
+                    follow_time = self._paired_end_time(start_time, now)
+                    msg = EventMessageGenerator.generate_message(follow_code, name, p1, p2, p3, p4)
+                    events_to_insert.append({
+                        "heat_no": heat_no,
+                        "pro_line_cd": pro_line_cd,
+                        "proc_cd": proc_cd,
+                        "device_no": device_no,
+                        "event_code": follow_code,
+                        "event_name": name,
+                        "event_msg": msg,
+                        "event_time_start": follow_time,
+                        "event_time_end": follow_time,
+                        "extra": {"operation_id": operation_id} if operation_id else None,
+                    })
+                    added = True
     
     def seed_historical_events_for_completed_operation(
         self,
@@ -188,6 +455,14 @@ class EventEngine:
         """
         if window_start is None or window_end is None or window_end <= window_start:
             return EventSequenceResult(events=[])
+
+        proc_name = self.get_process_name(proc_cd)
+        if not proc_name:
+            return EventSequenceResult(events=[])
+
+        config = EVENT_SEQUENCE_CONFIGS.get(proc_name)
+        if not config:
+            return EventSequenceResult(events=[])
         
         # Probabilistically skip some operations
         if random.random() >= self.event_config.seed_event_probability_per_completed_operation:
@@ -204,9 +479,6 @@ class EventEngine:
             force_cancel=force_cancel,
             force_rework=force_rework,
         )
-        
-        if not events:
-            return EventSequenceResult(events=[])
         
         # Create result with special event info
         result = EventSequenceResult.from_events(events)
@@ -228,11 +500,12 @@ class EventEngine:
             for e in events
         ]
         
-        count = self.db.insert_events_batch(event_dicts)
-        self.logger.debug(
-            "Seeded %d historical events for heat %s proc %s (cancel=%s, rework=%s)",
-            count, heat_no, proc_cd, result.has_cancel, result.has_rework
-        )
+        if event_dicts:
+            count = self.db.insert_events_batch(event_dicts)
+            self.logger.debug(
+                "Seeded %d historical events for heat %s proc %s (cancel=%s, rework=%s)",
+                count, heat_no, proc_cd, result.has_cancel, result.has_rework
+            )
         
         # Trigger callback if special event occurred
         if self.on_special_event:
@@ -252,6 +525,59 @@ class EventEngine:
                     event_type=SpecialEventType.REWORK,
                     event_time=result.rework_event_time,
                 )
+
+        if not result.has_cancel:
+            existing_events = self.db.get_operation_events(
+                heat_no=heat_no,
+                proc_cd=proc_cd,
+                device_no=device_no,
+                window_start=window_start,
+                window_end=window_end,
+            )
+            event_lookup = self._event_lookup_for_process(proc_name)
+            missing_events = self._build_missing_required_events(
+                existing_events=existing_events,
+                config=config,
+                event_lookup=event_lookup,
+                heat_no=heat_no,
+                pro_line_cd=pro_line_cd,
+                proc_cd=proc_cd,
+                device_no=device_no,
+                operation_id=operation_id,
+                window_start=window_start,
+                window_end=window_end,
+            )
+            self._append_missing_followup_events_for_existing(
+                existing_events=existing_events,
+                events_to_insert=missing_events,
+                config=config,
+                event_lookup=event_lookup,
+                heat_no=heat_no,
+                pro_line_cd=pro_line_cd,
+                proc_cd=proc_cd,
+                device_no=device_no,
+                operation_id=operation_id,
+                now=window_end,
+            )
+            self._append_missing_paired_end_events_for_existing(
+                existing_events=existing_events,
+                events_to_insert=missing_events,
+                config=config,
+                event_lookup=event_lookup,
+                heat_no=heat_no,
+                pro_line_cd=pro_line_cd,
+                proc_cd=proc_cd,
+                device_no=device_no,
+                operation_id=operation_id,
+                now=window_end,
+            )
+            if missing_events:
+                inserted = self.db.insert_events_batch(missing_events)
+                if inserted:
+                    self.logger.debug(
+                        "Backfilled %d missing events for heat %s proc %s",
+                        inserted, heat_no, proc_cd
+                    )
         
         return result
     
@@ -583,6 +909,9 @@ class EventEngine:
         window_start = operation.get("real_start_time") or operation.get("plan_start_time")
         if not window_start:
             return 0
+
+        if completion_time <= window_start:
+            return 0
         
         existing_events = self.db.get_operation_events(
             heat_no=operation["heat_no"],
@@ -591,76 +920,56 @@ class EventEngine:
             window_start=window_start,
             window_end=completion_time,
         )
-        existing_codes = {e["event_code"] for e in existing_events}
-        
-        # Determine which end sequence events are missing
-        end_sequence = config.end_sequence
-        missing_end_events = [code for code in end_sequence if code not in existing_codes]
-        pending_paired_end_codes = self._pending_paired_end_codes(existing_events, config)
-        
-        if not missing_end_events and not pending_paired_end_codes:
+
+        event_lookup = self._event_lookup_for_process(proc_name)
+        events_to_insert = self._build_missing_required_events(
+            existing_events=existing_events,
+            config=config,
+            event_lookup=event_lookup,
+            heat_no=operation["heat_no"],
+            pro_line_cd=operation.get("pro_line_cd", PRO_LINE_CD),
+            proc_cd=operation["proc_cd"],
+            device_no=operation["device_no"],
+            operation_id=operation.get("id"),
+            window_start=window_start,
+            window_end=completion_time,
+        )
+        self._append_missing_followup_events_for_existing(
+            existing_events=existing_events,
+            events_to_insert=events_to_insert,
+            config=config,
+            event_lookup=event_lookup,
+            heat_no=operation["heat_no"],
+            pro_line_cd=operation.get("pro_line_cd", PRO_LINE_CD),
+            proc_cd=operation["proc_cd"],
+            device_no=operation["device_no"],
+            operation_id=operation.get("id"),
+            now=completion_time,
+        )
+        self._append_missing_paired_end_events_for_existing(
+            existing_events=existing_events,
+            events_to_insert=events_to_insert,
+            config=config,
+            event_lookup=event_lookup,
+            heat_no=operation["heat_no"],
+            pro_line_cd=operation.get("pro_line_cd", PRO_LINE_CD),
+            proc_cd=operation["proc_cd"],
+            device_no=operation["device_no"],
+            operation_id=operation.get("id"),
+            now=completion_time,
+        )
+
+        if not events_to_insert:
             self.logger.debug(
-                "All end events already present for heat %s proc %s",
+                "All required events already present for heat %s proc %s",
                 operation["heat_no"], operation["proc_cd"]
             )
             return 0
 
-        events_to_insert = pending_paired_end_codes + missing_end_events
-        
-        # Calculate time spacing for end events
-        # End events should occur in the last 10% of the operation duration
-        last_event_time = max(
-            (e["event_time_start"] for e in existing_events),
-            default=window_start
-        )
-        
-        # Space end events between last_event_time and completion_time
-        time_available = (completion_time - last_event_time).total_seconds()
-        num_events = len(events_to_insert)
-        
-        if time_available <= 0:
-            # Not enough time, place all events at completion_time with small offsets
-            time_step = 0.5  # 0.5 second between events
-        else:
-            time_step = time_available / (num_events + 1)
-        
-        # Build event info lookup
-        event_lookup = {}
-        for code, name, p1, p2, p3, p4 in EVENT_CODES.get(proc_name, []):
-            event_lookup[code] = (code, name, p1, p2, p3, p4)
-        
-        # Insert end events
-        events_inserted = 0
-        for i, event_code in enumerate(events_to_insert):
-            event_info = event_lookup.get(event_code)
-            if not event_info:
-                continue
-            
-            code, name, p1, p2, p3, p4 = event_info
-            msg = EventMessageGenerator.generate_message(code, name, p1, p2, p3, p4)
-            
-            event_time = last_event_time + timedelta(seconds=time_step * (i + 1))
-            # Ensure we don't exceed completion time
-            if event_time > completion_time:
-                event_time = completion_time - timedelta(seconds=0.5 * (num_events - i))
-            
-            self.db.insert_event(
-                heat_no=operation["heat_no"],
-                pro_line_cd=operation.get("pro_line_cd", PRO_LINE_CD),
-                proc_cd=operation["proc_cd"],
-                device_no=operation["device_no"],
-                event_code=event_code,
-                event_name=name,
-                event_msg=msg,
-                event_time_start=event_time,
-                event_time_end=event_time,
-                extra={"operation_id": operation.get("id")},
-            )
-            events_inserted += 1
-        
+        events_inserted = self.db.insert_events_batch(events_to_insert)
         self.logger.debug(
-            "Emitted %d end sequence events for heat %s proc %s",
+            "Backfilled %d events for heat %s proc %s",
             events_inserted, operation["heat_no"], operation["proc_cd"]
         )
-        
+
         return events_inserted
