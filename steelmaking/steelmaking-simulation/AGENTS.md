@@ -116,7 +116,7 @@
     - Devices are never double-booked (a device cannot run two processes at the same time).
     - For each device, the rest gap between consecutive operations is at least **10 minutes** (`MIN_REST_DURATION_MINUTES`).
       - Initialization/new-heat planning keeps the rest gap within **10–20 minutes** (`MAX_REST_DURATION_MINUTES`) to generate a continuous plan.
-      - Runtime is **soft** on the upper bound: long idles must not block starting ready operations.
+      - Runtime is **soft** on the upper bound: long idles must not block starting ready operations, while new heat planning still respects existing plan windows to avoid overlaps.
     - For each heat, transfer gaps **BOF→LF** and **LF→CCM** target **20–30 minutes** (`MIN_TRANSFER_GAP_MINUTES`/`MAX_TRANSFER_GAP_MINUTES`).
       - Initialization and new-heat planning try to keep transfers in-window.
       - Runtime is **soft**: if scheduling conflicts cause a miss, the next stage may start later than 30 minutes (never earlier than 20), while still honoring device rest and non-overlap constraints.

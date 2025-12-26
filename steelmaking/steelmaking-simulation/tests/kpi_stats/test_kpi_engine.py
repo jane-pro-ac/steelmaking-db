@@ -410,6 +410,7 @@ class TestKpiStatsIntegration:
     def test_full_operation_lifecycle(self, engine, fake_db):
         """Test KPI stats generation through full operation lifecycle."""
         now = datetime.now(CST)
+        engine.kpi_config.kpi_probability_per_tick = 1.0
         
         # 1. Seed partial stats for active operation
         start_time = now - timedelta(minutes=20)
@@ -456,6 +457,7 @@ class TestKpiStatsIntegration:
     def test_multiple_processes(self, engine, fake_db):
         """Test KPI stats for multiple process types."""
         now = datetime.now(CST)
+        engine.kpi_config.seed_kpi_stats_probability = 1.0
         start_time = now - timedelta(minutes=30)
         end_time = now - timedelta(minutes=5)
         

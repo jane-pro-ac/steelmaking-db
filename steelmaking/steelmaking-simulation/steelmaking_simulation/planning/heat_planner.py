@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import inspect
 from typing import Any, Dict, List, Optional
 
 from ..config import EQUIPMENT, PROCESS_FLOW, PRO_LINE_CD, ProcessStatus, SimulationConfig
@@ -31,6 +32,16 @@ class HeatPlanner:
     def __init__(self, ctx: HeatPlanContext):
         self.ctx = ctx
 
+    def _find_slot(self, **kwargs) -> Optional[Any]:
+        find_slot = self.ctx.scheduler.find_slot
+        try:
+            params = inspect.signature(find_slot).parameters
+        except (TypeError, ValueError):
+            return find_slot(**kwargs)
+
+        filtered = {key: value for key, value in kwargs.items() if key in params}
+        return find_slot(**filtered)
+
     def create_new_heat(self) -> Optional[int]:
         steel_grade = self.ctx.get_random_steel_grade()
         crew_cd = self.ctx.get_random_crew()
@@ -39,12 +50,13 @@ class HeatPlanner:
         planned: List[Dict[str, Any]] = []
 
         bof_duration = self.ctx.get_random_duration()
-        bof_slot = self.ctx.scheduler.find_slot(
+        bof_slot = self._find_slot(
             process_name="BOF",
             desired_start=now,
             latest_start=now,
             duration=bof_duration,
             devices=EQUIPMENT["BOF"]["devices"],
+            enforce_max_rest=False,
         )
         if not bof_slot:
             self.ctx.logger.debug("No available BOF slot to start now; skipping new heat creation")
@@ -80,21 +92,23 @@ class HeatPlanner:
 
             slot = None
             if preferred_device:
-                slot = self.ctx.scheduler.find_slot(
+                slot = self._find_slot(
                     process_name=process_name,
                     desired_start=desired_start,
                     latest_start=latest_start,
                     duration=duration,
                     devices=[preferred_device],
+                    enforce_max_rest=False,
                 )
 
             if not slot:
-                slot = self.ctx.scheduler.find_slot(
+                slot = self._find_slot(
                     process_name=process_name,
                     desired_start=desired_start,
                     latest_start=latest_start,
                     duration=duration,
                     devices=proc_info["devices"],
+                    enforce_max_rest=False,
                 )
 
             if not slot:

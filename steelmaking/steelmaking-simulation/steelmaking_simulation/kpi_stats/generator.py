@@ -109,6 +109,7 @@ class KpiValueGenerator:
         )
         
         # Apply out-of-range variation occasionally
+        base_value = max(lower, min(upper, base_value))
         if random.random() < self.out_of_range_probability:
             base_value = self._apply_out_of_range(base_value, lower, upper)
         
