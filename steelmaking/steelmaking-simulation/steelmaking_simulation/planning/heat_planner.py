@@ -59,10 +59,25 @@ class HeatPlanner:
             enforce_max_rest=False,
         )
         if not bof_slot:
-            self.ctx.logger.debug("No available BOF slot to start now; skipping new heat creation")
+            lookahead = max(self.ctx.config.new_heat_lookahead_minutes, 0)
+            if lookahead:
+                latest_start = now + timedelta(minutes=lookahead)
+                bof_slot = self._find_slot(
+                    process_name="BOF",
+                    desired_start=now,
+                    latest_start=latest_start,
+                    duration=bof_duration,
+                    devices=EQUIPMENT["BOF"]["devices"],
+                    enforce_max_rest=False,
+                )
+
+        if not bof_slot:
+            self.ctx.logger.debug("No available BOF slot within lookahead; skipping new heat creation")
             return None
 
         bof_device = bof_slot.device_no
+        bof_status = ProcessStatus.ACTIVE if bof_slot.plan_start <= now else ProcessStatus.PENDING
+        bof_real_start = bof_slot.plan_start if bof_status == ProcessStatus.ACTIVE else None
         planned.append(
             {
                 "process_name": "BOF",
@@ -70,8 +85,8 @@ class HeatPlanner:
                 "device_no": bof_device,
                 "plan_start": bof_slot.plan_start,
                 "plan_end": bof_slot.plan_end,
-                "status": ProcessStatus.ACTIVE,
-                "real_start": bof_slot.plan_start,
+                "status": bof_status,
+                "real_start": bof_real_start,
                 "real_end": None,
             }
         )

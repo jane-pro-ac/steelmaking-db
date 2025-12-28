@@ -260,6 +260,43 @@ def test_create_new_heat_allows_long_idle_before_next_planned_window(fixed_now):
     assert bof["plan_end_time"] <= pending_start - timedelta(minutes=sim.config.min_rest_duration_minutes)
 
 
+def test_create_new_heat_plans_future_bof_when_no_slot_now(fixed_now):
+    import random
+
+    random.seed(123)
+    db = FakeDatabaseManager()
+    sim = SteelmakingSimulator(DatabaseConfig(), SimulationConfig(), db_manager=db)
+    sim.steel_grades = db.get_steel_grades()
+    sim.config.new_heat_lookahead_minutes = 120
+
+    for idx, device in enumerate(EQUIPMENT["BOF"]["devices"]):
+        start = fixed_now - timedelta(minutes=20)
+        end = fixed_now + timedelta(minutes=30 + idx)
+        db.insert_operation(
+            heat_no=240100400 + idx,
+            pro_line_cd="G1",
+            proc_cd=EQUIPMENT["BOF"]["proc_cd"],
+            device_no=device,
+            crew_cd="A",
+            stl_grd_id=1,
+            stl_grd_cd="G-TEST",
+            proc_status=ProcessStatus.ACTIVE,
+            plan_start_time=start,
+            plan_end_time=end,
+            real_start_time=start,
+            real_end_time=None,
+        )
+
+    heat_no = sim.create_new_heat()
+    assert heat_no is not None
+    ops = db.get_heat_operations(heat_no)
+    bof = next(op for op in ops if op["proc_cd"] == EQUIPMENT["BOF"]["proc_cd"])
+    assert bof["proc_status"] == ProcessStatus.PENDING
+    assert bof["real_start_time"] is None
+    assert bof["plan_start_time"] > fixed_now
+    assert bof["plan_start_time"] <= fixed_now + timedelta(minutes=sim.config.new_heat_lookahead_minutes)
+
+
 def test_warning_duration_distribution_sanity(fixed_now):
     import random
 

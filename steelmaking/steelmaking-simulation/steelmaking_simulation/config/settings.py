@@ -29,6 +29,9 @@ class SimulationConfig:
     
     # Probability of starting a new heat each tick
     new_heat_probability: float = float(os.getenv("NEW_HEAT_PROBABILITY", "0.3"))
+
+    # Allow BOF planning to look ahead when no slot is available right now (minutes)
+    new_heat_lookahead_minutes: int = int(os.getenv("NEW_HEAT_LOOKAHEAD_MINUTES", "240"))
     
     # Operation duration range (minutes)
     min_operation_duration: int = int(os.getenv("MIN_OPERATION_DURATION_MINUTES", "30"))
